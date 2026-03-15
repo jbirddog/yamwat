@@ -223,7 +223,6 @@ def emit_body(instructions):
                 result = f' (result {spec["result"]})' if 'result' in spec else ''
                 lines.append(f'if{result}')
                 if 'then' in spec:
-                    lines.append('then')
                     lines.extend(indent(emit_body(spec['then'])))
                 if 'else' in spec:
                     lines.append('else')
