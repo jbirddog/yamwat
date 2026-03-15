@@ -29,4 +29,4 @@ func $call_by_index (export "call_by_index"):
   result: i32
   body:
     - local.get $i
-    - call_indirect $type_return_i32
+    - !raw "(call_indirect (type $return_i32))"

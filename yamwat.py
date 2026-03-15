@@ -50,8 +50,8 @@ def load_files(paths):
 def split_file(text):
     """
     Split a file into (definitions_text, [module_texts]).
-    Uses a simple text-level inspection to classify each chunk
-    so we never parse a definitions chunk in isolation — anchors stay intact.
+    Uses text-level inspection so we never parse a definitions chunk in
+    isolation — anchors stay intact for cross-document resolution.
     """
     docs = re.split(r'^---\s*$', text, flags=re.MULTILINE)
     docs = [d.strip() for d in docs if d.strip()]
@@ -60,7 +60,6 @@ def split_file(text):
     module_texts = []
 
     for doc in docs:
-        # inspect keys at text level to avoid parsing chunks independently
         keys = set(re.findall(r'^(\S+):', doc, re.MULTILINE))
         if 'definitions' in keys:
             definitions_text += doc + "\n"
@@ -76,8 +75,7 @@ def split_file(text):
 
 def parse_module(definitions_text, module_text):
     """Parse a module document with definitions in scope."""
-    combined = definitions_text + "\n" + module_text
-    return yaml.safe_load(combined)
+    return yaml.safe_load(definitions_text + "\n" + module_text)
 
 
 # ---------------------------------------------------------------------------
@@ -106,17 +104,15 @@ def emit_import(name, spec):
 
 
 def emit_memory(name, spec):
-    pages = spec['pages']
-    lines = [f'(memory {name} {pages})']
+    lines = [f'(memory {name} {spec["pages"]})']
     if spec.get('export'):
         lines.append(f'(export "{spec["export"]}" (memory {name}))')
     return lines
 
 
 def emit_table(name, spec):
-    size = spec['size']
     reftype = spec.get('type', 'funcref')
-    lines = [f'(table {name} {size} {reftype})']
+    lines = [f'(table {name} {spec["size"]} {reftype})']
     if spec.get('export'):
         lines.append(f'(export "{spec["export"]}" (table {name}))')
     return lines
@@ -145,16 +141,14 @@ def emit_data(segments):
 
 
 def emit_elem(spec):
-    offset = spec['offset']
     funcs = ' '.join(spec['funcs'])
-    return [f'(elem (i32.const {offset}) {funcs})']
+    return [f'(elem (i32.const {spec["offset"]}) {funcs})']
 
 
 def emit_type(name, spec):
     params = emit_params(spec.get('param', []))
     result = emit_result(spec.get('result'))
-    type_str = "".join(params + result)
-    return [f'(type {name} (func{type_str}))']
+    return [f'(type {name} (func{"".join(params + result)}))']
 
 
 def emit_start(func_name):
@@ -196,17 +190,19 @@ def emit_body(instructions):
     """
     Emit a flat list of instructions.
 
-    block/loop push onto a depth stack and require an explicit `end` in the
-    source — matching WAT's own model. The author writes `end` and the compiler
-    passes it through, using it to close the block at the right depth.
+    block/loop require explicit `end` markers from the author — matching
+    WAT's own model exactly.
 
-    !raw strings are passed through verbatim.
+    if mappings use structured then/else keys and an optional result type:
+      - if:
+          result: i32        # required when the if produces a value
+          then: [...]
+          else: [...]
 
-    if mappings are the one structured form: { if: { then: [...], else: [...] } }
+    !raw strings pass through to WAT verbatim.
     """
     lines = []
     items = instructions if isinstance(instructions, list) else [instructions]
-    depth = 0
 
     for item in items:
 
@@ -216,28 +212,22 @@ def emit_body(instructions):
         elif isinstance(item, str):
             op = item.strip()
             opcode = op.split()[0]
-
             if opcode in BLOCK_OPS:
                 lines.append(op)
-                depth += 1
-            elif opcode == 'end':
-                depth -= 1
-                lines.append('end')
             else:
                 lines.append(op)
 
         elif isinstance(item, dict):
             if 'if' in item:
                 spec = item['if']
-                lines.append('if')
+                result = f' (result {spec["result"]})' if 'result' in spec else ''
+                lines.append(f'if{result}')
                 if 'then' in spec:
-                    lines.append('(then')
+                    lines.append('then')
                     lines.extend(indent(emit_body(spec['then'])))
-                    lines.append(')')
                 if 'else' in spec:
-                    lines.append('(else')
+                    lines.append('else')
                     lines.extend(indent(emit_body(spec['else'])))
-                    lines.append(')')
                 lines.append('end')
             else:
                 for k, v in item.items():
@@ -255,8 +245,7 @@ def emit_func(name, spec):
     result = emit_result(spec.get('result'))
     locals_ = emit_locals(spec.get('local', []))
 
-    sig = "".join(params + result)
-    lines = [f'(func {name}{sig}']
+    lines = [f'(func {name}{"".join(params + result)}']
     for l in locals_:
         lines.append(f'  {l}')
     lines.extend(indent(emit_body(spec.get('body', []))))
