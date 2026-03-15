@@ -239,7 +239,6 @@ def emit_body(instructions):
 
 
 def emit_func(name, spec):
-    export = spec.get('export')
     params = emit_params(spec.get('param', []))
     result = emit_result(spec.get('result'))
     locals_ = emit_locals(spec.get('local', []))
@@ -250,9 +249,6 @@ def emit_func(name, spec):
     lines.extend(indent(emit_body(spec.get('body', []))))
     lines.append(')')
 
-    if export:
-        lines.append(f'(export "{export}" (func {name}))')
-
     return lines
 
 
@@ -262,7 +258,7 @@ def emit_func(name, spec):
 
 # WAT requires a specific declaration order. We bucket items in one pass
 # then emit each bucket in order.
-SECTION_ORDER = ['type', 'import', 'memory', 'table', 'global', 'data', 'elem', 'func', 'start']
+SECTION_ORDER = ['type', 'import', 'memory', 'table', 'global', 'data', 'elem', 'func', 'export', 'start']
 
 def emit_module(doc):
     name = doc['module']
@@ -288,8 +284,14 @@ def emit_module(doc):
         elif key.startswith('elem '):
             buckets['elem'].extend(emit_elem(val))
         elif key.startswith('func '):
-            func_id = key.split(' ', 1)[1].split(' ')[0]
+            rest = key.split(' ', 1)[1]
+            func_id = rest.split(' ')[0]
+            # parse optional (export "name") from the key
+            export_match = re.search(r'\(export "([^"]+)"\)', rest)
+            export_name = export_match.group(1) if export_match else val.get('export') if isinstance(val, dict) else None
             buckets['func'].extend(emit_func(func_id, val))
+            if export_name:
+                buckets['export'].append(f'(export "{export_name}" (func {func_id}))')
 
     lines = [f'(module {name}']
     for section in SECTION_ORDER:
