@@ -1,0 +1,82 @@
+# math.yaml — integer math utilities
+# demonstrates: definitions reuse, block/loop control flow, if/else, !raw, start
+
+---
+definitions:
+  signatures:
+    i32_pair_to_i32: &sig_i32_pair_to_i32
+      param: [$a i32, $b i32]
+      result: i32
+
+---
+module: $math
+
+import $log:
+  <<: *import_log
+
+type $return_i32:
+  result: i32
+
+global $zero:
+  type: i32
+  mutable: false
+  init: 0
+
+func $add (export "add"):
+  <<: *sig_i32_pair_to_i32
+  body: [local.get $a, local.get $b, i32.add]
+
+func $double (export "double"):
+  <<: *sig_i32_to_i32
+  body:
+    - local.get $x
+    - i32.const 2
+    - i32.mul
+
+func $abs (export "abs"):
+  <<: *sig_i32_to_i32
+  body:
+    - local.get $x
+    - i32.const 0
+    - i32.lt_s
+    - if:
+        then:
+          - i32.const 0
+          - local.get $x
+          - i32.sub
+        else:
+          - local.get $x
+
+func $factorial (export "factorial"):
+  param: [$n i32]
+  result: i32
+  local: [$result i32]
+  body:
+    - i32.const 1
+    - local.set $result
+    - block $done
+    - loop $top
+    - local.get $n
+    - i32.const 1
+    - i32.le_s
+    - br_if $done
+    - local.get $result
+    - local.get $n
+    - i32.mul
+    - local.set $result
+    - local.get $n
+    - i32.const 1
+    - i32.sub
+    - local.set $n
+    - br $top
+    - end
+    - end
+    - local.get $result
+
+func $init:
+  body:
+    - i32.const 0
+    - call $log
+    - !raw ";; module ready"
+
+start: $init

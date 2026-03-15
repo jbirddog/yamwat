@@ -1,0 +1,32 @@
+# table_demo.yaml — indirect function calls via a funcref table
+# demonstrates: table, elem, call_indirect, type declaration
+
+---
+module: $table_demo
+
+type $return_i32:
+  result: i32
+
+table $tbl:
+  size: 2
+  type: funcref
+  export: tbl
+
+elem $tbl:
+  offset: 0
+  funcs: [$f1, $f2]
+
+func $f1:
+  result: i32
+  body: [i32.const 42]
+
+func $f2:
+  result: i32
+  body: [i32.const 13]
+
+func $call_by_index (export "call_by_index"):
+  param: [$i i32]
+  result: i32
+  body:
+    - local.get $i
+    - call_indirect $type_return_i32
