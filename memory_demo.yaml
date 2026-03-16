@@ -19,11 +19,11 @@ func $read_byte (export "read_byte"):
   result: i32
   body:
     - local.get $addr
-    - i32.load8_u 0
+    - i32.load8_u
 
 func $write_byte (export "write_byte"):
   param: [$addr i32, $val i32]
   body:
     - local.get $addr
     - local.get $val
-    - i32.store8 0
+    - i32.store8
