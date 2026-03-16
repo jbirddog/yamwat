@@ -47,15 +47,16 @@ func $abs (export "abs"):
   body:
     - local.get $x
     - i32.const 0
+    - i32.lt_s
     - if:
+        result: i32
         then:
-          - local.get $x
-        else:
           - i32.const 0
           - local.get $x
           - i32.sub
-    - !raw "drop  ;; raw passthrough example"
-    - local.get $x
+        else:
+          - local.get $x
+    - !raw ";; abs result now on stack"
 
 func $init:
   body:
