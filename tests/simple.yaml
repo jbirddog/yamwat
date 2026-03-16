@@ -1,0 +1,7 @@
+module: $simple
+
+func $add (export "add"):
+  param: [$a i32, $b i32]
+  result: i32
+  body: [local.get $a, local.get $b, i32.add]
+
