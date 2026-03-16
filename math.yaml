@@ -1,0 +1,65 @@
+!include defs/env.yaml
+
+---
+module: $math
+
+import $log:
+  <<: *import_log
+
+type $return_i32:
+  result: i32
+
+func $double (export "double"):
+  <<: *sig_i32_to_i32
+  body:
+    - local.get $x
+    - i32.const 2
+    - i32.mul
+
+func $factorial (export "factorial"):
+  param: [$n i32]
+  result: i32
+  local: [$result i32]
+  body:
+    - i32.const 1
+    - local.set $result
+    - block $done
+    - loop $top
+    - local.get $n
+    - i32.const 1
+    - i32.le_s
+    - br_if $done
+    - local.get $result
+    - local.get $n
+    - i32.mul
+    - local.set $result
+    - local.get $n
+    - i32.const 1
+    - i32.sub
+    - local.set $n
+    - br $top
+    - end
+    - end
+    - local.get $result
+
+func $abs (export "abs"):
+  <<: *sig_i32_to_i32
+  body:
+    - local.get $x
+    - i32.const 0
+    - if:
+        then:
+          - local.get $x
+        else:
+          - i32.const 0
+          - local.get $x
+          - i32.sub
+    - !raw "drop  ;; raw passthrough example"
+    - local.get $x
+
+func $init:
+  body:
+    - i32.const 0
+    - call $log
+
+start: $init

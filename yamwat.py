@@ -12,6 +12,7 @@ usage: yamwat.py [definitions.yaml ...] module.yaml [module2.yaml ...]
 
 import sys
 import re
+import os
 import yaml
 
 
@@ -29,22 +30,63 @@ yaml.add_constructor('!raw', raw_constructor, Loader=yaml.SafeLoader)
 
 
 # ---------------------------------------------------------------------------
+# !include — resolved at text level before parsing so anchors stay in scope
+# ---------------------------------------------------------------------------
+
+INCLUDE_RE = re.compile(r'^!include\s+(.+)$', re.MULTILINE)
+
+def resolve_includes(text, base_dir, seen=None):
+    """
+    Recursively replace !include path lines with the contents of the referenced
+    file. Returns (expanded_text, [all_paths_touched]) so callers can build
+    dependency lists. Cycles are detected via the seen set.
+    """
+    if seen is None:
+        seen = set()
+    deps = []
+
+    def replacer(match):
+        raw_path = match.group(1).strip()
+        path = os.path.normpath(os.path.join(base_dir, raw_path))
+        if path in seen:
+            return ''
+        seen.add(path)
+        deps.append(path)
+        included = open(path).read()
+        child_text, child_deps = resolve_includes(
+            included, os.path.dirname(path), seen
+        )
+        deps.extend(child_deps)
+        return child_text.rstrip()
+
+    expanded = INCLUDE_RE.sub(replacer, text)
+    return expanded, deps
+
+
+# ---------------------------------------------------------------------------
 # file loading
 # ---------------------------------------------------------------------------
 
 def load_files(paths):
-    """Read all files, separate definitions blocks from module blocks."""
+    """
+    Read all files, expanding !include directives, then separate definitions
+    blocks from module blocks. Returns (definition_texts, module_entries) where
+    each module entry is (module_text, [dep_paths]).
+    """
     definition_texts = []
-    module_texts = []
+    module_entries = []
 
     for path in paths:
-        text = open(path).read()
+        raw = open(path).read()
+        text, deps = resolve_includes(raw, os.path.dirname(os.path.abspath(path)))
+        all_deps = [path] + deps
         defs, mods = split_file(text)
         if defs:
             definition_texts.append(defs)
-        module_texts.extend(mods)
+        for mod in mods:
+            module_entries.append((mod, all_deps))
 
-    return definition_texts, module_texts
+    return definition_texts, module_entries
 
 
 def split_file(text):
@@ -304,22 +346,29 @@ def emit_module(doc):
 # entry point
 # ---------------------------------------------------------------------------
 
+def write_depfile(dep_path, target, deps):
+    """Write a make-compatible .d dependency file."""
+    dep_list = ' '.join(deps)
+    open(dep_path, 'w').write(f'{target}: {dep_list}\n')
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
 
     paths = sys.argv[1:]
-    definition_texts, module_texts = load_files(paths)
+    definition_texts, module_entries = load_files(paths)
     preamble = '\n'.join(definition_texts)
 
-    for module_text in module_texts:
+    for module_text, deps in module_entries:
         doc = parse_module(preamble, module_text)
         wat = emit_module(doc)
         mod_name = doc['module'].lstrip('$')
         out_path = f'{mod_name}.wat'
         open(out_path, 'w').write(wat)
-        print(f'wrote {out_path}')
+        write_depfile(f'{mod_name}.d', out_path, deps)
+        print(f'wrote {out_path} (deps: {", ".join(deps)})')
 
 
 if __name__ == '__main__':
