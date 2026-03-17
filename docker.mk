@@ -1,6 +1,6 @@
-.PHONY: build run
+.PHONY: img run
 
-build:
+img:
 	docker build -t yamwat .
 
 run:

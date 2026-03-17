@@ -1,18 +1,15 @@
-FROM debian:bookworm-slim
+FROM python:3.14-slim-bookworm
 
 WORKDIR /src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       make \
-      curl \
-      ca-certificates \
       wabt \
  && rm -rf /var/lib/apt/lists/*
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+COPY requirements.txt .
 
-COPY yamwat.py .
-RUN uv run yamwat.py
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 CMD ["make"]
