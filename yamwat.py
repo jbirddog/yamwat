@@ -326,11 +326,9 @@ def emit_module(doc):
         elif key.startswith('elem '):
             buckets['elem'].extend(emit_elem(val))
         elif key.startswith('func '):
-            rest = key.split(' ', 1)[1]
-            func_id = rest.split(' ')[0]
-            # parse optional (export "name") from the key
-            export_match = re.search(r'\(export "([^"]+)"\)', rest)
-            export_name = export_match.group(1) if export_match else val.get('export') if isinstance(val, dict) else None
+            func_id = key.split(' ', 1)[1]
+            export_val = val.get('export') if isinstance(val, dict) else None
+            export_name = func_id.lstrip('$') if export_val is True else export_val or None
             buckets['func'].extend(emit_func(func_id, val))
             if export_name:
                 buckets['export'].append(f'(export "{export_name}" (func {func_id}))')

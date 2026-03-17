@@ -14,14 +14,16 @@ data:
   - offset: 16
     bytes: [0xFF, 0x00, 0x2A]
 
-func $read_byte (export "read_byte"):
+func $read_byte:
+  export: True
   param: [$addr i32]
   result: i32
   body:
     - local.get $addr
     - i32.load8_u
 
-func $write_byte (export "write_byte"):
+func $write_byte:
+  export: True
   param: [$addr i32, $val i32]
   body:
     - local.get $addr

@@ -24,7 +24,8 @@ func $f2:
   result: i32
   body: [i32.const 13]
 
-func $call_by_index (export "call_by_index"):
+func $call_by_index:
+  export: True
   param: [$i i32]
   result: i32
   body:

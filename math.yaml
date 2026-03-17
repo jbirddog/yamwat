@@ -9,14 +9,16 @@ import $log:
 type $return_i32:
   result: i32
 
-func $double (export "double"):
+func $double:
   <<: *sig_i32_to_i32
+  export: True
   body:
     - local.get $x
     - i32.const 2
     - i32.mul
 
-func $factorial (export "factorial"):
+func $factorial:
+  export: True
   param: [$n i32]
   result: i32
   local: [$result i32]
@@ -42,7 +44,8 @@ func $factorial (export "factorial"):
     - end
     - local.get $result
 
-func $abs (export "abs"):
+func $abs:
+  export: True
   <<: *sig_i32_to_i32
   body:
     - local.get $x
