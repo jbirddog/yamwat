@@ -232,8 +232,13 @@ def emit_body(instructions):
     """
     Emit a flat list of instructions.
 
-    block/loop require explicit `end` markers from the author — matching
-    WAT's own model exactly.
+    block/loop use structured dict syntax — the key is the opcode (plus
+    optional label), and the value is the nested instruction list. `end` is
+    synthesized automatically:
+      - block $done:
+          - loop $top:
+              - ...
+              - br $top
 
     if mappings use structured then/else keys and an optional result type:
       - if:
@@ -252,12 +257,7 @@ def emit_body(instructions):
             lines.append(item)
 
         elif isinstance(item, str):
-            op = item.strip()
-            opcode = op.split()[0]
-            if opcode in BLOCK_OPS:
-                lines.append(op)
-            else:
-                lines.append(op)
+            lines.append(item.strip())
 
         elif isinstance(item, dict):
             if 'if' in item:
@@ -272,7 +272,14 @@ def emit_body(instructions):
                 lines.append('end')
             else:
                 for k, v in item.items():
-                    lines.append(f'{k} {v}' if v is not None else k)
+                    opcode = k.split()[0]
+                    if opcode in BLOCK_OPS:
+                        lines.append(k)
+                        if v:
+                            lines.extend(indent(emit_body(v)))
+                        lines.append('end')
+                    else:
+                        lines.append(f'{k} {v}' if v is not None else k)
 
         else:
             lines.append(str(item))

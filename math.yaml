@@ -25,23 +25,21 @@ func $factorial:
   body:
     - i32.const 1
     - local.set $result
-    - block $done
-    - loop $top
-    - local.get $n
-    - i32.const 1
-    - i32.le_s
-    - br_if $done
-    - local.get $result
-    - local.get $n
-    - i32.mul
-    - local.set $result
-    - local.get $n
-    - i32.const 1
-    - i32.sub
-    - local.set $n
-    - br $top
-    - end
-    - end
+    - block $done:
+        - loop $top:
+            - local.get $n
+            - i32.const 1
+            - i32.le_s
+            - br_if $done
+            - local.get $result
+            - local.get $n
+            - i32.mul
+            - local.set $result
+            - local.get $n
+            - i32.const 1
+            - i32.sub
+            - local.set $n
+            - br $top
     - local.get $result
 
 func $abs:
