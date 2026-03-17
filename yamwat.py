@@ -355,7 +355,7 @@ def write_depfile(dep_path, target, deps):
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
-        sys.exit(1)
+        sys.exit(0)
 
     paths = sys.argv[1:]
     definition_texts, module_entries = load_files(paths)
