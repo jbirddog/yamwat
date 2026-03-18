@@ -1,0 +1,34 @@
+# access_check_21.yaml — policy variant requiring age 21+
+# the host functions are identical to access_check.yaml
+# only the policy changes
+
+module: $access_check_21
+
+import $get_user_age:
+  from: [env, get_user_age]
+  param: [$user_id i32]
+  result: i32
+
+import $grant:
+  from: [env, grant]
+  param: [$user_id i32]
+
+import $deny:
+  from: [env, deny]
+  param: [$user_id i32]
+
+func $check_access:
+  export: True
+  param: [$user_id i32]
+  body:
+    - local.get $user_id
+    - call $get_user_age
+    - i32.const 21
+    - i32.ge_s
+    - if:
+        then:
+          - local.get $user_id
+          - call $grant
+        else:
+          - local.get $user_id
+          - call $deny
