@@ -52,6 +52,18 @@ def assert_table_demo(exports, store):
     assert exports["call_by_index"](store, 1) == 13
 
 
+def assert_snippet_test(exports, store):
+    # safe_double: returns -1 for negative input, double otherwise
+    assert exports["safe_double"](store, 3) == 6
+    assert exports["safe_double"](store, 0) == 0
+    assert exports["safe_double"](store, -1) == -1
+
+    # clamp_and_double: negatives clamp to 0 then double (so 0), positives double
+    assert exports["clamp_and_double"](store, 4) == 8
+    assert exports["clamp_and_double"](store, 0) == 0
+    assert exports["clamp_and_double"](store, -5) == 0
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 #
@@ -80,6 +92,10 @@ FIXTURES = [
     ("tests/table_demo.yaml",
      {},
      assert_table_demo),
+
+    ("tests/snippet_test.yaml",
+     {},
+     assert_snippet_test),
 ]
 
 # ---------------------------------------------------------------------------
