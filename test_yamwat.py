@@ -119,12 +119,13 @@ def compile_to_wasm(yaml_path):
         if result.returncode != 0:
             pytest.fail(f"yamwat failed:\n{result.stderr}")
 
-        subprocess.run(
+        result = subprocess.run(
             ["wat2wasm", wat_path, "-o", wasm_path],
             capture_output=True,
             text=True,
-            check=True,
         )
+        if result.returncode != 0:
+            pytest.fail(f"wat2wasm failed:\n{result.stderr}")
 
         with open(wasm_path, "rb") as f:
             return f.read()

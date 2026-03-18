@@ -52,7 +52,10 @@ def resolve_includes(text, base_dir, seen=None):
             return ''
         seen.add(path)
         deps.append(path)
-        included = open(path).read()
+        try:
+            included = open(path).read()
+        except FileNotFoundError:
+            raise SystemExit(f"error: !include not found: {path}\n  referenced from: {base_dir}")
         child_text, child_deps = resolve_includes(
             included, os.path.dirname(path), seen
         )
@@ -117,7 +120,10 @@ def split_file(text):
 
 def parse_module(definitions_text, module_text):
     """Parse a module document with definitions in scope."""
-    return yaml.safe_load(definitions_text + "\n" + module_text)
+    try:
+        return yaml.safe_load(definitions_text + "\n" + module_text)
+    except yaml.YAMLError as e:
+        raise SystemExit(f"error: yaml parse failed:\n  {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +290,7 @@ def emit_body(instructions):
         elif isinstance(item, list):
             lines.extend(emit_body(item))
         else:
-            lines.append(str(item))
+            raise SystemExit(f"error: unexpected instruction type {type(item).__name__}: {item!r}")
 
     return lines
 
@@ -341,6 +347,8 @@ def emit_module(doc):
             buckets['func'].extend(emit_func(func_id, val))
             if export_name:
                 buckets['export'].append(f'(export "{export_name}" (func {func_id}))')
+        else:
+            raise SystemExit(f"error: unknown key in module '{name}': '{key}'")
 
     lines = [f'(module {name}']
     for section in SECTION_ORDER:
