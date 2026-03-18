@@ -1,4 +1,4 @@
-!include defs/env.yaml
+!include env.yaml
 
 ---
 module: $math

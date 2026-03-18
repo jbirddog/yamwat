@@ -18,9 +18,3 @@ jobs:
 
       - name: compile and assemble
         run: make ci
-
-      - name: upload wasm artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wasm
-          path: "*.wasm"
