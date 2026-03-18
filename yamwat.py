@@ -281,6 +281,8 @@ def emit_body(instructions):
                     else:
                         lines.append(f'{k} {v}' if v is not None else k)
 
+        elif isinstance(item, list):
+            lines.extend(emit_body(item))
         else:
             lines.append(str(item))
 

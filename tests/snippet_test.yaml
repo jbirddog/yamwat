@@ -1,0 +1,47 @@
+# snippet_test.yaml — tests that snippets containing structured constructs flatten correctly
+
+definitions:
+  snippets:
+    # a snippet with a plain guard (no structured constructs)
+    guard_positive: &guard_positive
+      - i32.const 0
+      - i32.lt_s
+      - br_if $abort
+
+    # a snippet containing an if/then/else
+    clamp_to_zero: &clamp_to_zero
+      - if:
+          result: i32
+          then:
+            - i32.const 0
+          else:
+            - local.get $x
+
+---
+module: $snippet_test
+
+func $safe_double:
+  export: True
+  param: [$x i32]
+  result: i32
+  body:
+    - block $abort:
+        - local.get $x
+        - *guard_positive
+        - local.get $x
+        - i32.const 2
+        - i32.mul
+        - return
+    - i32.const -1
+
+func $clamp_and_double:
+  export: True
+  param: [$x i32]
+  result: i32
+  body:
+    - local.get $x
+    - i32.const 0
+    - i32.lt_s
+    - *clamp_to_zero
+    - i32.const 2
+    - i32.mul
