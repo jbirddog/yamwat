@@ -65,19 +65,19 @@ def assert_table_demo(exports, store):
 # ---------------------------------------------------------------------------
 
 FIXTURES = [
-    ("simple.yaml",
+    ("tests/simple.yaml",
      {},
      assert_simple),
 
-    ("math.yaml",
+    ("tests/math.yaml",
      {"env": {"log": (FuncType([ValType.i32()], []), lambda x: None)}},
      assert_math),
 
-    ("memory_demo.yaml",
+    ("tests/memory_demo.yaml",
      {},
      None),
 
-    ("table_demo.yaml",
+    ("tests/table_demo.yaml",
      {},
      assert_table_demo),
 ]
