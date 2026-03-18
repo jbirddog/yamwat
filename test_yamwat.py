@@ -5,8 +5,9 @@ Replaces the Makefile. For each fixture, runs the full pipeline:
   yamwat.py → wat2wasm → wasmtime instantiate
 
 To add a new fixture:
-  - Add an entry to FIXTURES with its path (relative to this file)
-    and any host imports the module needs to instantiate.
+  - Optionally define an assert_<n>(exports, store) function below.
+  - Add an entry to FIXTURES with its path (relative to this file),
+    any host imports the module needs, and the assertion function (or None).
 
 Run with:
   pytest test_yamwat.py -v
@@ -21,22 +22,64 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 YAMWAT = os.path.join(HERE, "yamwat.py")
 
 # ---------------------------------------------------------------------------
+# Assertion functions
+#
+# Each receives (exports, store) after instantiation.
+# exports["name"](store, arg, ...) calls an exported function.
+# ---------------------------------------------------------------------------
+
+def assert_simple(exports, store):
+    assert exports["add"](store, 0, 0) == 0
+    assert exports["add"](store, 3, 4) == 7
+    assert exports["add"](store, -1, 1) == 0
+
+
+def assert_math(exports, store):
+    assert exports["double"](store, 0) == 0
+    assert exports["double"](store, 6) == 12
+
+    assert exports["factorial"](store, 0) == 1
+    assert exports["factorial"](store, 1) == 1
+    assert exports["factorial"](store, 5) == 120
+
+    assert exports["abs"](store, 0) == 0
+    assert exports["abs"](store, 3) == 3
+    assert exports["abs"](store, -3) == 3
+
+
+def assert_table_demo(exports, store):
+    assert exports["call_by_index"](store, 0) == 42
+    assert exports["call_by_index"](store, 1) == 13
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 #
 # Each entry is:
-#   (path_relative_to_this_file, host_imports)
+#   (path_relative_to_this_file, host_imports, assertions)
 #
 # host_imports is a dict of the form:
 #   { "module_name": { "func_name": (FuncType, callable) } }
 #
-# Leave host_imports as {} for modules with no imports.
+# assertions is a function (exports, store) -> None, or None for a smoke test.
 # ---------------------------------------------------------------------------
 
 FIXTURES = [
-    ("simple.yaml",      {}),
-    ("math.yaml",        {"env": {"log": (FuncType([ValType.i32()], []), lambda x: None)}}),
-    ("memory_demo.yaml", {}),
-    ("table_demo.yaml",  {}),
+    ("simple.yaml",
+     {},
+     assert_simple),
+
+    ("math.yaml",
+     {"env": {"log": (FuncType([ValType.i32()], []), lambda x: None)}},
+     assert_math),
+
+    ("memory_demo.yaml",
+     {},
+     None),
+
+    ("table_demo.yaml",
+     {},
+     assert_table_demo),
 ]
 
 # ---------------------------------------------------------------------------
@@ -79,8 +122,8 @@ def compile_to_wasm(yaml_path):
 # Tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("yaml_rel,host_imports", FIXTURES, ids=[f[0] for f in FIXTURES])
-def test_compiles_and_instantiates(yaml_rel, host_imports):
+@pytest.mark.parametrize("yaml_rel,host_imports,assertions", FIXTURES, ids=[f[0] for f in FIXTURES])
+def test_compiles_and_instantiates(yaml_rel, host_imports, assertions):
     yaml_path = os.path.join(HERE, yaml_rel)
     if not os.path.exists(yaml_path):
         pytest.skip(f"{yaml_rel} not found")
@@ -97,4 +140,7 @@ def test_compiles_and_instantiates(yaml_rel, host_imports):
         for func_name, (ftype, impl) in funcs.items():
             linker.define(store, module_name, func_name, Func(store, ftype, impl))
 
-    linker.instantiate(store, Module(engine, wasm))
+    instance = linker.instantiate(store, Module(engine, wasm))
+
+    if assertions:
+        assertions(instance.exports(store), store)
