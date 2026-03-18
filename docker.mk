@@ -8,7 +8,7 @@ RUN_IT := docker run -it $(RUN_ARGS)
 .PHONY: ci img sh
 
 ci:
-	$(RUN)
+	$(RUN) pytest test_yamwat.py
 
 img:
 	docker build -t $(IMG) .
