@@ -1,0 +1,51 @@
+# order_processing.yaml — a workflow orchestration example
+# processes an order through a series of steps; any failure rejects the order
+# the host supplies each capability; the workflow supplies the sequence and policy
+
+module: $order_processing
+
+import $validate_order:
+  from: [env, validate_order]
+  param: [$order_id i32]
+  result: i32
+
+import $check_inventory:
+  from: [env, check_inventory]
+  param: [$order_id i32]
+  result: i32
+
+import $charge_payment:
+  from: [env, charge_payment]
+  param: [$order_id i32]
+  result: i32
+
+import $confirm_order:
+  from: [env, confirm_order]
+  param: [$order_id i32]
+
+import $reject_order:
+  from: [env, reject_order]
+  param: [$order_id i32]
+
+func $process_order:
+  export: True
+  param: [$order_id i32]
+  body:
+    - block $rejected:
+        - local.get $order_id
+        - call $validate_order
+        - i32.eqz
+        - br_if $rejected
+        - local.get $order_id
+        - call $check_inventory
+        - i32.eqz
+        - br_if $rejected
+        - local.get $order_id
+        - call $charge_payment
+        - i32.eqz
+        - br_if $rejected
+        - local.get $order_id
+        - call $confirm_order
+        - return
+    - local.get $order_id
+    - call $reject_order
