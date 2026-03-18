@@ -13,7 +13,7 @@ import os
 from wasmtime import Engine, Store, Linker, Module, FuncType, ValType, Func
 
 USERS = {
-    1: {"name": "Alice", "age": 22},
+    1: {"name": "Alice", "age": 20},
     2: {"name": "Bob",   "age": 16},
 }
 
