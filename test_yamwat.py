@@ -123,7 +123,6 @@ def compile_to_wasm(yaml_path):
             ["wat2wasm", wat_path, "-o", wasm_path],
             capture_output=True,
             text=True,
-            #check=True,
         )
         if result.returncode != 0:
             pytest.fail(f"wat2wasm failed:\n{result.stderr}")
