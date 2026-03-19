@@ -11,13 +11,6 @@ definitions:
   # Scratch address: the workflow uses offset 0 in linear memory as the
   # single struct slot. This is a convention, not an allocation — only one
   # user is in flight at a time.
-  snippets:
-    user_age: &user_age
-      - i32.load
-    user_residence: &user_residence
-      - !raw "i32.load offset=4"
-    user_membership: &user_membership
-      - !raw "i32.load offset=8"
 
   imports:
     get_user: &import_get_user
