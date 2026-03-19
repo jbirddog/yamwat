@@ -15,9 +15,9 @@ definitions:
     user_age: &user_age
       - i32.load
     user_residence: &user_residence
-      - i32.load offset=4
+      - !raw "i32.load offset=4"
     user_membership: &user_membership
-      - i32.load offset=8
+      - !raw "i32.load offset=8"
 
   imports:
     get_user: &import_get_user

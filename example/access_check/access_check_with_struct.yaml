@@ -36,21 +36,21 @@ func $check_access:
     - block $denied:
         # age >= 21
         - local.get $ptr
-        - *user_residence
+        - i32.load              # field: age at offset 0
         - i32.const 21
         - i32.lt_s
         - br_if $denied
 
         # residence != 1 (CA)
         - local.get $ptr
-        - *user_residence
+        - !raw "i32.load offset=4"  # field: residence
         - i32.const 1
         - i32.eq
         - br_if $denied
 
         # membership_tier >= 1 (basic or premium)
         - local.get $ptr
-        - *user_membership
+        - !raw "i32.load offset=8"  # field: membership_tier
         - i32.const 1
         - i32.lt_s
         - br_if $denied
