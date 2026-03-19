@@ -1,7 +1,7 @@
 YAMWAT := ../../yamwat.py
 WAT2WASM := wat2wasm
 
-SRCS    := $(wildcard access*.yaml)
+SRCS    := $(wildcard *.yaml)
 WATS    := $(SRCS:.yaml=.wat)
 WASMS   := $(SRCS:.yaml=.wasm)
 

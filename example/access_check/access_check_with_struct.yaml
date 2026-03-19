@@ -1,0 +1,63 @@
+!include host_types.yaml
+
+---
+# access_check_with_struct.yaml — policy over a richer user struct
+# the host writes a user record into linear memory; the workflow reads fields
+# and enforces a compound policy: age >= 21, not a CA resident, membership required
+# the host supplies the data; the workflow supplies the policy
+
+module: $access_check_with_struct
+
+memory $mem:
+  pages: 1
+  export: mem
+
+import $get_user:
+  <<: *import_get_user
+
+import $grant:
+  <<: *import_grant
+
+import $deny:
+  <<: *import_deny
+
+func $check_access:
+  export: True
+  param: [$user_id i32]
+  local: [$ptr i32]
+  body:
+    # ask the host to write the user struct at our scratch address (offset 0)
+    - i32.const 0
+    - local.set $ptr
+    - local.get $user_id
+    - local.get $ptr
+    - call $get_user
+
+    - block $denied:
+        # age >= 21
+        - local.get $ptr
+        - i32.load              # field: age at offset 0
+        - i32.const 21
+        - i32.lt_s
+        - br_if $denied
+
+        # residence != 1 (CA)
+        - local.get $ptr
+        - !raw "i32.load offset=4"  # field: residence
+        - i32.const 1
+        - i32.eq
+        - br_if $denied
+
+        # membership_tier >= 1 (basic or premium)
+        - local.get $ptr
+        - !raw "i32.load offset=8"  # field: membership_tier
+        - i32.const 1
+        - i32.lt_s
+        - br_if $denied
+
+        - local.get $user_id
+        - call $grant
+        - return
+
+    - local.get $user_id
+    - call $deny
