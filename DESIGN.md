@@ -1,154 +1,145 @@
 # yamwat
 
-`yamwat` is a transpiler from YAML to WAT, the WebAssembly text format. From
-there a tool like `wat2wasm` can be used to produce WebAssembly binaries.
+`yamwat` is a simple transpiler from YAML to WAT, the WebAssembly text format.
+From there a tool like `wat2wasm` can be used to create WebAssembly binaries. A
+main design goal is to keep things straightforward and try to maintain the
+beauty of the WAT format itself — as much as that can be done in YAML.
 
-The main design goal is to keep things straightforward and preserve the
-character of WAT itself — the YAML structure maps as closely as possible to
-WAT's own structure, with a small number of additions that make authoring
-practical.
-
-The project lives here: https://github.com/jbirddog/yamwat
+The project lives here — https://github.com/jbirddog/yamwat
 
 ---
 
-## the north star use case
+## the north star
 
-yamwat is designed around a specific hosting model: a provider exposes a fixed
-set of host functions, and users upload yamwat workflows that can only call what
-the host explicitly provides. The wasm binary is the policy — swapping policies
-means swapping which binary gets loaded, with no changes to the host.
+The intended use case is a hosting provider that exposes a set of host
+functions. Users upload yamwat workflows. The workflow can only do what the host
+explicitly provides — a clean, capability-based security model. The wasm binary
+is the policy; swapping policies is just swapping which blob gets loaded.
 
-This gives three properties that are difficult to get any other way:
+Key properties this enables:
 
-- **sandboxing** — a workflow can only do what the host explicitly allows
-- **portability** — the same host functions can back many different wasm blobs,
-  each encoding different policy (e.g. `validate_order_us_east.wasm` vs.
-  `validate_order_us_west.wasm`)
-- **testability** — stub the host imports and test workflow logic in isolation
+- **sandboxing** — workflows can only call known host functions
+- **portability** — same host functions, different wasm blobs per context
+  (e.g. `validate_order_for_new_york.wasm`, `validate_order_for_texas.wasm`)
+- **testability** — stub the host imports, test workflow logic in isolation
 
-The examples in the `examples/` directory are built around this model. They are
-the intended first introduction to yamwat for new readers.
+yamwat is not intended as a general-purpose WAT authoring tool, though nothing
+prevents that use. It shines when the boundary between host and workflow needs
+to be clear, readable, and easy to review.
 
 ---
 
 ## yaml structure
 
-The yaml file structure maps as directly as possible to WAT. Top-level keys
-correspond to WAT declarations: `module`, `func`, `import`, `memory`, `table`,
-`elem`, `type`, `global`, `data`, `start`. The transpiler emits these in the
-order WAT requires regardless of the order they appear in the yaml.
+The YAML file structure tries to be as 1:1 with WAT as possible. A module
+document maps directly to a WAT `(module ...)` block. Top-level keys correspond
+to WAT declarations: `import`, `func`, `memory`, `table`, `type`, `global`,
+`data`, `elem`, `start`.
 
-A minimal example:
-
-```yaml
-module: $simple
-
-func $add:
-  export: True
-  param: [$a i32, $b i32]
-  result: i32
-  body: [local.get $a, local.get $b, i32.add]
-```
-
-### func bodies
-
-Instructions in a func body are written as a yaml list. Plain strings emit
-directly. Structured constructs (`block`, `loop`, `if`) use dict syntax and
-synthesize their `end` automatically:
+A YAML file may contain one or more documents separated by `---`. If a
+definitions block precedes the module, the `---` separator is required:
 
 ```yaml
-body:
-  - block $done:
-      - loop $top:
-          - local.get $n
-          - i32.const 1
-          - i32.le_s
-          - br_if $done
-          - br $top
-  - local.get $result
-```
-
-`if` uses `then`/`else` keys with an optional `result` type:
-
-```yaml
-- if:
-    result: i32
-    then:
+definitions:
+  snippets:
+    my_snippet: &my_snippet
       - i32.const 0
-      - local.get $x
-      - i32.sub
-    else:
-      - local.get $x
+
+---
+module: $my_module
+...
 ```
 
-### export: True
-
-`func` declarations support `export: True` as a shorthand — the export name is
-inferred from the func id:
-
-```yaml
-func $check_access:
-  export: True   # emits (export "check_access" (func $check_access))
-```
-
-An explicit string value can be used instead when the export name should differ
-from the func id.
+If the file contains only a module, the `---` separator is optional.
 
 ---
 
 ## custom tags
 
-Two custom YAML tags extend the base syntax.
+### `!include`
 
-### !include
-
-Pulls in the contents of another file before parsing. Includes are resolved at
-the text level so YAML anchors defined in the included file remain in scope for
-the rest of the document:
+Pulls in the contents of another file before YAML parsing, so anchors defined
+in the included file remain in scope throughout the current file:
 
 ```yaml
 !include host_types.yaml
-
----
-module: $my_workflow
-...
 ```
 
-The transpiler also tracks all included files and writes a `.d` dependency file
-alongside each `.wat` output, listing every file that contributed to that
-output. This is compatible with make-style build systems for incremental
-rebuilds.
+`!include` is resolved at the text level, not the parse level. This means
+anchors defined in included files can be referenced anywhere in the including
+file. The transpiler also generates `.d` dependency files listing all included
+paths, suitable for use with make-style build systems.
 
-### !raw
+### `!raw`
 
-Passes a string through to WAT verbatim, bypassing the transpiler's emitter.
-Use this for any instruction or construct that yamwat does not have structured
-support for:
-
-```yaml
-- !raw "(call_indirect (type $decision_t))"
-```
-
-A common case is load/store instructions with explicit `offset=` or `align=`
-modifiers — these must be written with `!raw` since the bare key form
-(`i32.load offset=4`) is parsed by YAML as a dict key and emits incorrectly:
+Passes a string through to WAT verbatim, bypassing the transpiler's structured
+emitters. Use this for any WAT instruction or construct that yamwat does not
+have structured support for:
 
 ```yaml
-# correct
+- !raw "(call_indirect (type $my_type))"
 - !raw "i32.load offset=4"
-
-# incorrect — emits as "i32.load offset=4 None"
-- i32.load offset=4
 ```
 
 ---
 
-## definitions and reusable declarations
+## func declarations
 
-A yaml file may begin with a `definitions` document (separated from the module
-document by `---`). Definitions declare YAML anchors for import signatures,
-function signatures, and code snippets that can be merged or inlined elsewhere.
+### params, results, locals
+
+```yaml
+func $my_func:
+  param: [$x i32, $y i32]
+  result: i32
+  local: [$tmp i32]
+  body: [...]
+```
+
+### export
+
+`export: True` infers the export name from the func id (stripping the leading
+`$`). An explicit string value uses that name instead:
+
+```yaml
+func $add:
+  export: True        # exports as "add"
+
+func $internal_name:
+  export: public_name # exports as "public_name"
+```
+
+### body
+
+The body is a flat list of instructions. Structured constructs use dict syntax:
+
+**block and loop** — `end` is synthesized automatically:
+
+```yaml
+- block $done:
+    - loop $top:
+        - ...
+        - br $top
+```
+
+**if/then/else** — `result` is required when the if produces a value:
+
+```yaml
+- if:
+    result: i32
+    then:
+      - i32.const 1
+    else:
+      - i32.const 0
+```
+
+---
+
+## definitions blocks
+
+A definitions block declares reusable YAML anchors. It does not emit any WAT
+directly. Three common uses:
+
+**import signatures** — shared param/result shapes for host functions:
 
 ```yaml
 definitions:
@@ -156,12 +147,22 @@ definitions:
     get_user: &import_get_user
       from: [env, get_user]
       param: [$user_id i32, $ptr i32]
+```
 
+**func signatures** — reusable param/result pairs merged into func declarations:
+
+```yaml
+definitions:
   signatures:
     i32_to_i32: &sig_i32_to_i32
       param: [$x i32]
       result: i32
+```
 
+**snippets** — inline instruction sequences referenced in func bodies:
+
+```yaml
+definitions:
   snippets:
     guard_positive: &guard_positive
       - i32.const 0
@@ -169,25 +170,27 @@ definitions:
       - br_if $abort
 ```
 
-Definitions can live in a separate file and pulled in with `!include`, or
-declared inline as the first document in the same file.
+Definitions can live in a separate file (included via `!include`) or as the
+first document in the same file. Separate files are preferred when the
+definitions are shared across multiple modules — see `host_types.yaml` below.
 
-### host_types.yaml convention
+---
 
-When a workflow passes a pointer into linear memory and the host writes a struct
-at that address, both sides must agree on the field layout. The convention is to
-declare this layout in a shared definitions file — typically named
-`host_types.yaml` — that documents the struct, declares the import signature for
-the host function that writes it, and is included by any workflow that works
-with that struct.
+## shared definitions files
+
+When host and workflow need to agree on a contract — struct layout, import
+signatures, memory conventions — that agreement belongs in a shared definitions
+file included by both sides.
+
+`host_types.yaml` is the conventional name for a file that declares the struct
+layout and import signatures for a user object:
 
 ```yaml
-# host_types.yaml
 definitions:
-  # User struct — written by the host at a caller-supplied pointer
+  # User struct layout written by the host into wasm linear memory:
   #   offset 0: age              (i32)
-  #   offset 4: residence        (i32)  1=CA, 2=NV, 3=other
-  #   offset 8: membership_tier  (i32)  0=none, 1=basic, 2=premium
+  #   offset 4: residence        (i32)
+  #   offset 8: membership_tier  (i32)
 
   imports:
     get_user: &import_get_user
@@ -195,72 +198,125 @@ definitions:
       param: [$user_id i32, $ptr i32]
 ```
 
+Any workflow that works with a user object includes this file. The host runner
+implements the same field layout. Both sides are working from the same source of
+truth.
+
+---
+
+## known limitations
+
+### `i32.load` with offset or alignment
+
+WAT's load and store instructions support `offset=N` and `align=N` modifiers.
+These cannot be expressed as structured YAML keys because yamwat would emit a
+trailing `None` for the value, producing invalid WAT. Use `!raw` instead:
+
+```yaml
+# wrong — emits "i32.load offset=4 None"
+- i32.load offset=4
+
+# correct
+- !raw "i32.load offset=4"
+```
+
+The same applies to `i32.store`, `i64.load`, and all other load/store variants
+with modifiers.
+
+### `call_indirect`
+
+`call_indirect` takes a type reference that yamwat has no structured form for.
+Always use `!raw`:
+
+```yaml
+- !raw "(call_indirect (type $my_type))"
+```
+
 ---
 
 ## examples
 
 The `examples/` directory contains worked examples built around the north star
-use case. Each example lives in its own subdirectory with its yaml source,
-generated `.wat`, pre-built `.wasm`, and a `run.py` uv script that wires host
-stubs and drives the workflow.
+use case. Each example lives in its own subdirectory with the yaml source,
+generated WAT, pre-built wasm, and a `run.py` uv script that wires host stubs
+and exercises all branches.
 
 ### access_check
 
-The simplest meaningful example. One host-provided attribute, one policy
-condition, two outcomes. Demonstrates `import`, a single `func`, and
-`if/then/else`. A policy variant (`access_check_21.yaml`) shows that swapping
-policy means only changing the wasm — the host is untouched.
+The simplest meaningful example. One condition, two outcomes. The host provides
+a user's age; the workflow decides the minimum. Demonstrates `if/then/else`.
+
+```
+uv run run.py --user_id=1
+```
+
+Variants: `access_check.yaml` (18+), `access_check_21.yaml` (21+). Swapping
+policies is just swapping which wasm blob gets loaded.
 
 ### order_processing
 
-A chain of host calls with early exit on failure. Demonstrates the
-`block`/`br_if` pattern for sequential checks where any failure should short-
-circuit to a rejection path.
+A chain of host calls with early exit on failure. Validates an order, checks
+inventory, charges payment, then confirms or rejects. Demonstrates the
+`block`/`br_if` early-exit pattern for sequential checks.
+
+```
+uv run run.py --order_id=1
+```
 
 ### access_check_with_struct
 
-Extends access_check with a richer host boundary. Instead of returning a single
-i32, the host writes a user struct into linear memory. The workflow reads
-multiple fields and enforces a compound policy. Introduces `host_types.yaml` as
-a shared definitions file and demonstrates `i32.load` with `offset=` via
-`!raw`.
+A follow-up to `access_check`. The host provides a richer user record via
+linear memory rather than a single i32. The workflow reads fields and enforces a
+compound policy: age >= 21, not a CA resident, membership required.
+
+Introduces `host_types.yaml` — a shared definitions file declaring the struct
+layout and import signatures used by both host and workflow.
+
+```
+uv run run.py --user_id=1
+```
 
 ### async_approval
 
-A multi-step approval workflow where some steps are asynchronous. The workflow
-registers callback functions in an exported table and passes their indices to
-host functions, which call back into the wasm when ready. Demonstrates `table`,
-`elem`, `type` declarations, and the continuation pattern where the workflow
-owns sequencing entirely — the host only knows which index to call back at.
+A multi-step approval workflow where steps are asynchronous. The workflow
+registers callback functions in a table and passes their indices to host
+functions that call back into wasm when ready. The host owns async execution;
+the workflow owns sequencing.
+
+Demonstrates `table`, `elem`, `type` declarations, and the callback index
+pattern. The runner simulates async by calling back synchronously — the wasm
+instance is re-entered the same way either way.
+
+```
+uv run run.py --report_id=1
+```
 
 ---
 
 ## testing
 
 Tests live in `test_yamwat.py` and run the full pipeline for each fixture:
-`yamwat.py` → `wat2wasm` → wasmtime instantiation → assertions.
+`yamwat.py` → `wat2wasm` → wasmtime instantiate → assertions.
 
-Each fixture in `FIXTURES` is one of two forms:
-
-**Simple** — host stubs are stateless and can be defined upfront:
-
-```python
-("tests/simple.yaml",
- {},
- assert_simple)
+```
+pytest test_yamwat.py -v
 ```
 
-**Factory** — stubs need post-instantiation state (e.g. a memory reference for
-writes, or an exported table for callbacks). The `host_imports` entry is a
-factory `make_<n>_imports(store_ref)` that returns `(host_imports_dict,
-assert_fn)`. Stubs close over a `ctx` dict; `assert_fn(exports, store)` sets
-`ctx` entries after instantiation before making any wasm calls:
+CI runs the same Dockerfile used in development.
+
+Two fixture patterns are supported:
+
+**Simple** — stateless host stubs, plain `host_imports` dict:
 
 ```python
-("tests/access_check_with_struct.yaml",
- make_access_check_with_struct_imports,
- None)
+("tests/simple.yaml", {}, assert_simple)
 ```
 
-Tests run in a Docker container. CI uses the same Dockerfile as the development
-environment.
+**Factory** — stubs need post-instantiation state (memory writes, table
+callbacks). `host_imports` is a `make_<n>_imports(store_ref)` factory that
+returns `(host_imports_dict, assert_fn)`. Stubs close over a `ctx` dict;
+`assert_fn` receives `(exports, store)` and populates `ctx` before asserting:
+
+```python
+("tests/access_check_with_struct.yaml", make_access_check_with_struct_imports, None)
+```
