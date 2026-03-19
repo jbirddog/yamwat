@@ -33,63 +33,47 @@ import $escalate:
   <<: *import_escalate
 
 func $moderate:
-  export: True
-  param: [$post_id i32]
-  local: [$ptr i32]
+  <<: *moderate_func
   body:
-    # load post struct into scratch memory
-    - i32.const 0
-    - local.set $ptr
-    - local.get $post_id
-    - local.get $ptr
-    - call $get_post
+    - *load_post
 
     # remove if flag_count >= 10
-    - local.get $ptr
     - *post_flag_count
     - i32.const 10
     - i32.ge_s
     - if:
-        then:
-          - local.get $post_id
-          - call $remove
-          - return
+        - local.get $post_id
+        - call $remove
+        - return
 
     # escalate if is_repost AND flag_count > 0
-    - local.get $ptr
     - *post_is_repost
-    - local.get $ptr
     - *post_flag_count
     - i32.const 0
     - i32.gt_s
     - i32.and
     - if:
-        then:
-          - local.get $post_id
-          - call $escalate
-          - return
+        - local.get $post_id
+        - call $escalate
+        - return
 
     # hold if author_tier < 1 (new account)
-    - local.get $ptr
     - *post_author_tier
     - i32.const 1
     - i32.lt_s
     - if:
-        then:
-          - local.get $post_id
-          - call $hold
-          - return
+        - local.get $post_id
+        - call $hold
+        - return
 
     # hold if score <= -10
-    - local.get $ptr
     - *post_score
     - i32.const -10
     - i32.le_s
     - if:
-        then:
-          - local.get $post_id
-          - call $hold
-          - return
+        - local.get $post_id
+        - call $hold
+        - return
 
     # default: approve
     - local.get $post_id

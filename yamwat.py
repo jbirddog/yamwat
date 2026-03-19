@@ -246,11 +246,18 @@ def emit_body(instructions):
               - ...
               - br $top
 
-    if mappings use structured then/else keys and an optional result type:
-      - if:
-          result: i32        # required when the if produces a value
-          then: [...]
-          else: [...]
+    if mappings have two forms:
+
+      flat form — one-armed guard, no result value:
+        - if:
+            - instruction
+            - ...
+
+      structured form — two-armed branch or value-producing if:
+        - if:
+            result: i32        # required when the if produces a value
+            then: [...]
+            else: [...]
 
     !raw strings pass through to WAT verbatim.
     """
@@ -268,13 +275,19 @@ def emit_body(instructions):
         elif isinstance(item, dict):
             if 'if' in item:
                 spec = item['if']
-                result = f' (result {spec["result"]})' if 'result' in spec else ''
-                lines.append(f'if{result}')
-                if 'then' in spec:
-                    lines.extend(indent(emit_body(spec['then'])))
-                if 'else' in spec:
-                    lines.append('else')
-                    lines.extend(indent(emit_body(spec['else'])))
+                lines.append('if')
+                if isinstance(spec, list):
+                    # flat form: if: [instructions] — one-armed guard, no result
+                    lines.extend(indent(emit_body(spec)))
+                else:
+                    # structured form: if: then/else/result
+                    if 'result' in spec:
+                        lines[-1] = f'if (result {spec["result"]})'
+                    if 'then' in spec:
+                        lines.extend(indent(emit_body(spec['then'])))
+                    if 'else' in spec:
+                        lines.append('else')
+                        lines.extend(indent(emit_body(spec['else'])))
                 lines.append('end')
             else:
                 for k, v in item.items():

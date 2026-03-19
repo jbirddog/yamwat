@@ -20,26 +20,46 @@ definitions:
   # post is in flight at a time.
 
   snippets:
+    load_post: &load_post
+      - i32.const 0
+      - local.set $post
+      - local.get $post_id
+      - local.get $post
+      - call $get_post
+
     post_score: &post_score
+      - local.get $post
       - i32.load                    # field: score at offset 0
 
     post_flag_count: &post_flag_count
+      - local.get $post
       - !raw "i32.load offset=4"    # field: flag_count
 
     post_word_count: &post_word_count
+      - local.get $post
       - !raw "i32.load offset=8"    # field: word_count
 
     post_author_tier: &post_author_tier
+      - local.get $post
       - !raw "i32.load offset=12"   # field: author_tier
 
     post_is_repost: &post_is_repost
+      - local.get $post
       - !raw "i32.load offset=16"   # field: is_repost
 
     post_community_id: &post_community_id
+      - local.get $post
       - !raw "i32.load offset=20"   # field: community_id
 
     post_author_id: &post_author_id
+      - local.get $post
       - !raw "i32.load offset=24"   # field: author_id
+
+  signatures:
+    moderate_func: &moderate_func
+      export: True
+      param: [$post_id i32]
+      local: [$post i32]
 
   imports:
     get_post: &import_get_post
