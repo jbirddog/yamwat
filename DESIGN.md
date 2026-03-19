@@ -137,7 +137,7 @@ The body is a flat list of instructions. Structured constructs use dict syntax:
 ## definitions blocks
 
 A definitions block declares reusable YAML anchors. It does not emit any WAT
-directly. Three common uses:
+directly. Four common uses:
 
 **import signatures** — shared param/result shapes for host functions:
 
@@ -170,6 +170,26 @@ definitions:
       - br_if $abort
 ```
 
+**memory declarations** — the host contract specifies page count and export
+name; workflows merge it in rather than declaring memory independently:
+
+```yaml
+definitions:
+  memory:
+    post_mem: &post_mem
+      pages: 1
+      export: mem
+```
+
+```yaml
+memory $mem:
+  <<: *post_mem
+```
+
+This keeps memory configuration in the host contract alongside import signatures
+and struct field accessors. If the host changes the export name or page count,
+workflows pick it up on recompile without any changes on their side.
+
 Definitions can live in a separate file (included via `!include`) or as the
 first document in the same file. Separate files are preferred when the
 definitions are shared across multiple modules — see `host_types.yaml` below.
@@ -183,7 +203,19 @@ signatures, memory conventions — that agreement belongs in a shared definition
 file included by both sides.
 
 `host_types.yaml` is the conventional name for a file that declares the struct
-layout and import signatures for a user object:
+layout and import signatures for a user object. At larger scales, a `host/`
+directory with one file per entity (e.g. `host/user.yaml`, `host/post.yaml`,
+`host/order.yaml`) is preferred over a single monolithic file. A workflow then
+includes only what it needs:
+
+```yaml
+!include host/user.yaml
+!include logic/guards.yaml
+```
+
+A complete host contract file declares four things together: the struct layout
+(as comments), field accessor snippets, import signatures, and the memory
+declaration. Workflows merge all of these in via anchors:
 
 ```yaml
 definitions:
@@ -192,19 +224,40 @@ definitions:
   #   offset 4: residence        (i32)
   #   offset 8: membership_tier  (i32)
 
+  snippets:
+    user_age: &user_age
+      - i32.load                   # field: age at offset 0
+    user_residence: &user_residence
+      - !raw "i32.load offset=4"   # field: residence
+
   imports:
     get_user: &import_get_user
       from: [env, get_user]
       param: [$user_id i32, $ptr i32]
+
+  memory:
+    user_mem: &user_mem
+      pages: 1
+      export: mem
 ```
 
-Any workflow that works with a user object includes this file. The host runner
-implements the same field layout. Both sides are working from the same source of
-truth.
+The workflow includes this file and merges in what it needs — import signatures
+with `<<:`, field accessors with `*`, and memory with `<<:`. The host contract
+is the single source of truth for struct layout, field offsets, memory size, and
+capability surface. Both sides work from the same file.
+
+The include list at the top of a workflow is also its own form of documentation
+— it tells a reader exactly which host capabilities the policy depends on.
 
 ---
 
 ## known limitations
+
+yamwat passes plain string instructions straight through to WAT unchanged, so
+the full WAT instruction set is always available. The limitations below are
+specific to yamwat's *structured emitters* — the dict-based syntax for `if`,
+`block`, `loop`, and so on. When the structured form doesn't cover a case,
+`!raw` is the escape hatch.
 
 ### `i32.load` with offset or alignment
 
@@ -221,7 +274,9 @@ trailing `None` for the value, producing invalid WAT. Use `!raw` instead:
 ```
 
 The same applies to `i32.store`, `i64.load`, and all other load/store variants
-with modifiers.
+with modifiers. In practice this friction is best contained in host contract
+files (e.g. `host/post.yaml`) as field accessor snippets — workflow authors
+use the snippet name and never write `!raw` directly.
 
 ### `call_indirect`
 
