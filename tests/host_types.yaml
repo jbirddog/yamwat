@@ -1,0 +1,33 @@
+definitions:
+  # User struct layout — written by the host into wasm linear memory.
+  # The workflow passes a pointer; the host fills these fields at ptr+offset.
+  #
+  #   offset  field            type   notes
+  #   ------  -----            ----   -----
+  #        0  age              i32
+  #        4  residence        i32    1=CA, 2=NV, 3=other
+  #        8  membership_tier  i32    0=none, 1=basic, 2=premium
+  #
+  # Scratch address: the workflow uses offset 0 in linear memory as the
+  # single struct slot. This is a convention, not an allocation — only one
+  # user is in flight at a time.
+  snippets:
+    user_age: &user_age
+      - i32.load
+    user_residence: &user_residence
+      - i32.load offset=4
+    user_membership: &user_membership
+      - i32.load offset=8
+
+  imports:
+    get_user: &import_get_user
+      from: [env, get_user]
+      param: [$user_id i32, $ptr i32]
+
+    grant: &import_grant
+      from: [env, grant]
+      param: [$user_id i32]
+
+    deny: &import_deny
+      from: [env, deny]
+      param: [$user_id i32]
