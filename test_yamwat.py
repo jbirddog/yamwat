@@ -5,9 +5,19 @@ Replaces the Makefile. For each fixture, runs the full pipeline:
   yamwat.py → wat2wasm → wasmtime instantiate
 
 To add a new fixture:
+
+  Simple case (stateless host stubs):
   - Optionally define an assert_<n>(exports, store) function below.
   - Add an entry to FIXTURES with its path (relative to this file),
-    any host imports the module needs, and the assertion function (or None).
+    a host_imports dict of { "module": { "func": (FuncType, callable) } },
+    and the assertion function (or None for a smoke test).
+
+  Factory case (stubs need post-instantiation state, e.g. memory or table):
+  - Define a make_<n>_imports(store_ref) factory that returns
+    (host_imports_dict, assert_fn). Stubs close over a ctx dict;
+    assert_fn receives (exports, store) and sets ctx before asserting.
+  - Add an entry to FIXTURES with the factory as host_imports and None
+    as assertions — the factory's assert_fn is called instead.
 
 Run with:
   pytest test_yamwat.py -v
@@ -64,57 +74,6 @@ def assert_snippet_test(exports, store):
     assert exports["clamp_and_double"](store, 0) == 0
     assert exports["clamp_and_double"](store, -5) == 0
 
-
-def assert_access_check_with_struct(exports, store):
-    # User struct layout: age (i32 @ 0), residence (i32 @ 4), membership_tier (i32 @ 8)
-    # residence: 1=CA, 2=NV, 3=other  |  membership_tier: 0=none, 1=basic, 2=premium
-    memory = exports["mem"]
-
-    def write_user(ptr, age, residence, tier):
-        packed = struct.pack("<iii", age, residence, tier)
-        data = memory.data_ptr(store)
-        for i, b in enumerate(packed):
-            data[ptr + i] = b
-
-    # host stubs — get_user writes the struct, grant/deny record the outcome
-    ctx = {"last": None}
-
-    def get_user(user_id, ptr):
-        users = {
-            1: (25, 2, 2),  # age=25, NV, premium  — passes all
-            2: (19, 2, 1),  # age=19, NV, basic     — fails age
-            3: (30, 1, 2),  # age=30, CA, premium   — fails residence
-            4: (22, 3, 0),  # age=22, other, none   — fails tier
-        }
-        write_user(ptr, *users[user_id])
-
-    def grant(user_id):
-        ctx["last"] = "grant"
-
-    def deny(user_id):
-        ctx["last"] = "deny"
-
-    i32 = ValType.i32()
-    # bind stubs directly against exports — host_imports mechanism can't reach
-    # memory until after instantiation, so we exercise via direct calls here
-    get_user_f  = Func(store, FuncType([i32, i32], []), get_user)
-    grant_f     = Func(store, FuncType([i32],      []), grant)
-    deny_f      = Func(store, FuncType([i32],      []), deny)
-
-    def check(user_id):
-        # manually invoke the workflow: push user struct then call check_access
-        get_user(user_id, 0)
-        exports["check_access"](store, user_id)
-        return ctx["last"]
-
-    # Note: check_access calls get_user via the import, not directly — we need
-    # to go through the full wasm instance. Use a fresh linker approach is not
-    # possible here since the instance is already built. Instead we wire stubs
-    # at instantiation time via host_imports in the FIXTURES entry below, and
-    # assert_access_check_with_struct only verifies outcomes via grant/deny
-    # which are captured in the ctx closure shared with those stubs.
-    assert exports["check_access"](store, 1) is None  # smoke — just ensure no trap
-    # full branch assertions are done via the host_imports closure below
 
 
 def assert_access_check_with_struct_full(exports, store, ctx):
