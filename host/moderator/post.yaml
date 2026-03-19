@@ -9,7 +9,10 @@ definitions:
   #        8  word_count     i32    content length proxy
   #       12  author_tier    i32    0=new, 1=established, 2=trusted
   #       16  is_repost      i32    0=false, 1=true
-  #       20  community_id   i32    jurisdiction identifier
+  #       20  community_id   i32    jurisdiction identifier — note: host routes
+  #                                community_id->policy at load time; workflows
+  #                                should rarely inspect this directly. if community
+  #                                context is ever needed, prefer get_community(post_id)
   #       24  author_id      i32    used to call get_author if needed
   #
   # Scratch address: the workflow uses offset 0 in linear memory as the
