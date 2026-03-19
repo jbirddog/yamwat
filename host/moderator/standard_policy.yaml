@@ -1,0 +1,96 @@
+!include host/post.yaml
+
+---
+# standard_policy.yaml — baseline content moderation policy
+# permissive defaults: only removes heavily flagged content,
+# holds new authors and deeply negative posts, approves everything else
+#
+# decision order (first match wins):
+#   1. remove    — flag_count >= 10
+#   2. escalate  — is_repost AND flag_count > 0
+#   3. hold      — author_tier < 1 (new account)
+#   4. hold      — score <= -10
+#   5. approve   — default
+
+module: $standard_policy
+
+memory $mem:
+  <<: *post_mem
+
+import $get_post:
+  <<: *import_get_post
+
+import $approve:
+  <<: *import_approve
+
+import $hold:
+  <<: *import_hold
+
+import $remove:
+  <<: *import_remove
+
+import $escalate:
+  <<: *import_escalate
+
+func $moderate:
+  export: True
+  param: [$post_id i32]
+  local: [$ptr i32]
+  body:
+    # load post struct into scratch memory
+    - i32.const 0
+    - local.set $ptr
+    - local.get $post_id
+    - local.get $ptr
+    - call $get_post
+
+    # remove if flag_count >= 10
+    - local.get $ptr
+    - *post_flag_count
+    - i32.const 10
+    - i32.ge_s
+    - if:
+        then:
+          - local.get $post_id
+          - call $remove
+          - return
+
+    # escalate if is_repost AND flag_count > 0
+    - local.get $ptr
+    - *post_is_repost
+    - local.get $ptr
+    - *post_flag_count
+    - i32.const 0
+    - i32.gt_s
+    - i32.and
+    - if:
+        then:
+          - local.get $post_id
+          - call $escalate
+          - return
+
+    # hold if author_tier < 1 (new account)
+    - local.get $ptr
+    - *post_author_tier
+    - i32.const 1
+    - i32.lt_s
+    - if:
+        then:
+          - local.get $post_id
+          - call $hold
+          - return
+
+    # hold if score <= -10
+    - local.get $ptr
+    - *post_score
+    - i32.const -10
+    - i32.le_s
+    - if:
+        then:
+          - local.get $post_id
+          - call $hold
+          - return
+
+    # default: approve
+    - local.get $post_id
+    - call $approve
