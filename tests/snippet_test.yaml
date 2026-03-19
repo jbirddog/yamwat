@@ -2,6 +2,10 @@
 
 definitions:
   snippets:
+    # test that !raw works in a snippet
+    raw_const2: &raw_const2
+      - !raw "i32.const 2"
+
     # a snippet with a plain guard (no structured constructs)
     guard_positive: &guard_positive
       - i32.const 0
@@ -29,7 +33,7 @@ func $safe_double:
         - local.get $x
         - *guard_positive
         - local.get $x
-        - i32.const 2
+        - *raw_const2
         - i32.mul
         - return
     - i32.const -1
