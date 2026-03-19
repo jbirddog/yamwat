@@ -139,6 +139,8 @@ def load_policies(engine, here):
 
         instance = linker.instantiate(store, Module(engine, wasm))
         exports = instance.exports(store)
+        if "mem" not in exports:
+            raise SystemExit(f"error: {policy_name}.wasm does not export 'mem' — required by this host")
         memory_ref[0] = exports["mem"]
 
         policies[policy_name] = (exports, store)

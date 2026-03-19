@@ -16,6 +16,7 @@ module: $strict_policy
 
 memory $mem:
   pages: 1
+  export: mem
 
 import $get_post:
   <<: *import_get_post
