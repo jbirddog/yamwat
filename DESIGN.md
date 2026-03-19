@@ -121,7 +121,18 @@ The body is a flat list of instructions. Structured constructs use dict syntax:
         - br $top
 ```
 
-**if/then/else** — `result` is required when the if produces a value:
+**if** — two forms depending on whether the branch is a guard or produces a value:
+
+flat form — one-armed guard, no result value:
+
+```yaml
+- if:
+    - local.get $post_id
+    - call $remove
+    - return
+```
+
+structured form — two-armed branch or value-producing if (`result` required when producing a value):
 
 ```yaml
 - if:
@@ -193,6 +204,28 @@ workflows pick it up on recompile without any changes on their side.
 Definitions can live in a separate file (included via `!include`) or as the
 first document in the same file. Separate files are preferred when the
 definitions are shared across multiple modules — see `host_types.yaml` below.
+
+### `::` short keys
+
+In definitions blocks the key name to the left of the anchor is often
+redundant — the anchor is the only thing that matters. The `::` short key
+convention drops the noise:
+
+```yaml
+definitions:
+  snippets:
+    :: &post_score
+      - i32.load
+    :: &post_flag_count
+      - !raw "i32.load offset=4"
+```
+
+`::` is just a conventional key name with no special compiler support. It works
+because PyYAML silently accepts duplicate keys within a mapping (last value
+wins), which is technically out of spec but is consistent and intentional here
+since the key is never referenced. A future compiler pass will handle `::` at
+the text level for strict spec-compliance. In the meantime, avoid using `::` as
+a real key name elsewhere in your YAML.
 
 ---
 
