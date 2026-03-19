@@ -58,17 +58,16 @@ func $moderate:
     # escalate if is_repost AND flag_count > 0
     - local.get $ptr
     - *post_is_repost
+    - local.get $ptr
+    - *post_flag_count
+    - i32.const 0
+    - i32.gt_s
+    - i32.and
     - if:
         then:
-          - local.get $ptr
-          - *post_flag_count
-          - i32.const 0
-          - i32.gt_s
-          - if:
-              then:
-                - local.get $post_id
-                - call $escalate
-                - return
+          - local.get $post_id
+          - call $escalate
+          - return
 
     # hold if author_tier < 1 (new account)
     - local.get $ptr
