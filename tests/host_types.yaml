@@ -12,6 +12,14 @@ definitions:
   # single struct slot. This is a convention, not an allocation — only one
   # user is in flight at a time.
 
+  snippets:
+    user_age: &user_age
+      - i32.load
+    user_residence: &user_residence
+      - !raw "i32.load offset=4"
+    user_membership_tier: &user_membership_tier
+      - !raw "i32.load offset=8"
+
   imports:
     get_user: &import_get_user
       from: [env, get_user]
