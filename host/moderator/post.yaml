@@ -1,0 +1,64 @@
+definitions:
+  # Post struct layout — written by the host into wasm linear memory.
+  # The workflow passes a pointer; the host fills these fields at ptr+offset.
+  #
+  #   offset  field          type   notes
+  #   ------  -----          ----   -----
+  #        0  score          i32    community vote total
+  #        4  flag_count     i32    explicit user reports
+  #        8  word_count     i32    content length proxy
+  #       12  author_tier    i32    0=new, 1=established, 2=trusted
+  #       16  is_repost      i32    0=false, 1=true
+  #       20  community_id   i32    jurisdiction identifier
+  #       24  author_id      i32    used to call get_author if needed
+  #
+  # Scratch address: the workflow uses offset 0 in linear memory as the
+  # single struct slot. This is a convention, not an allocation — only one
+  # post is in flight at a time.
+
+  snippets:
+    post_score: &post_score
+      - i32.load                    # field: score at offset 0
+
+    post_flag_count: &post_flag_count
+      - !raw "i32.load offset=4"    # field: flag_count
+
+    post_word_count: &post_word_count
+      - !raw "i32.load offset=8"    # field: word_count
+
+    post_author_tier: &post_author_tier
+      - !raw "i32.load offset=12"   # field: author_tier
+
+    post_is_repost: &post_is_repost
+      - !raw "i32.load offset=16"   # field: is_repost
+
+    post_community_id: &post_community_id
+      - !raw "i32.load offset=20"   # field: community_id
+
+    post_author_id: &post_author_id
+      - !raw "i32.load offset=24"   # field: author_id
+
+  imports:
+    get_post: &import_get_post
+      from: [env, get_post]
+      param: [$post_id i32, $ptr i32]
+
+    get_author: &import_get_author
+      from: [env, get_author]
+      param: [$author_id i32, $ptr i32]
+
+    approve: &import_approve
+      from: [env, approve]
+      param: [$post_id i32]
+
+    hold: &import_hold
+      from: [env, hold]
+      param: [$post_id i32]
+
+    remove: &import_remove
+      from: [env, remove]
+      param: [$post_id i32]
+
+    escalate: &import_escalate
+      from: [env, escalate]
+      param: [$post_id i32]
