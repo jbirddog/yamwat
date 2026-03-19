@@ -65,3 +65,8 @@ definitions:
     escalate: &import_escalate
       from: [env, escalate]
       param: [$post_id i32]
+
+  memory:
+    post_mem: &post_mem
+      pages: 1
+      export: mem
