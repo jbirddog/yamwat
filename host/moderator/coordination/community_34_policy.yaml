@@ -1,7 +1,7 @@
-!include host/verdicts.yaml
+include:
+  - verdicts.yaml
 
----
-# community_34_policy.yaml — strictest-wins coordinator
+# strictest-wins coordinator
 # calls all sub-policies and takes the most severe verdict
 #
 # sub-policies:
@@ -21,13 +21,12 @@ import $max_three_flags_moderate:
   result: i32
 
 func $moderate:
-  export: True
+  export: true
   param: [$post_id i32]
   result: i32
   body:
-    # strictest-wins — higher verdict value means stricter outcome
     - local.get $post_id
     - call $no_religion_moderate
     - local.get $post_id
     - call $max_three_flags_moderate
-    - i32.gt_s  # take the stricter verdict
+    - i32.gt_s

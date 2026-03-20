@@ -1,25 +1,25 @@
-!include env.logging.yaml
-!include env.signatures.yaml
+include:
+  - env.logging.yaml
+  - env.signatures.yaml
 
----
 module: $math
 
 import $log:
-  <<: *import_log
+  !use import_log
 
 type $return_i32:
   result: i32
 
 func $double:
-  <<: *sig_i32_to_i32
-  export: True
+  !use sig_i32_to_i32:
+  export: true
   body:
     - local.get $x
     - i32.const 2
     - i32.mul
 
 func $factorial:
-  export: True
+  export: true
   param: [$n i32]
   result: i32
   local: [$result i32]
@@ -44,8 +44,8 @@ func $factorial:
     - local.get $result
 
 func $abs:
-  export: True
-  <<: *sig_i32_to_i32
+  !use sig_i32_to_i32:
+  export: true
   body:
     - local.get $x
     - i32.const 0

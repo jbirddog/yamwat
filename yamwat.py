@@ -7,141 +7,287 @@
 # ///
 """
 yamwat — YAML to WAT compiler
-usage: yamwat.py [definitions.yaml ...] module.yaml [module2.yaml ...]
+usage: yamwat.py <module.yaml> [module2.yaml ...]
 """
 
 import sys
-import re
 import os
+import copy
 import yaml
 
 
 # ---------------------------------------------------------------------------
-# !raw tag — pass string through to WAT verbatim
+# !raw and !use tags
+#
+# Both are application-defined single-! tags resolved by the compiler,
+# never by the YAML parser. The parser just hands us tagged nodes.
 # ---------------------------------------------------------------------------
 
 class RawString(str):
     pass
 
+class UseNode:
+    """Represents a !use tagged node before expansion."""
+    def __init__(self, name, args=None):
+        self.name = name    # macro name string
+        self.args = args    # None | list (positional) | dict (named)
+
+    def __repr__(self):
+        return f"UseNode({self.name!r}, {self.args!r})"
+
 def raw_constructor(loader, node):
     return RawString(loader.construct_scalar(node))
 
+def use_constructor(loader, node):
+    if isinstance(node, yaml.ScalarNode):
+        # !use macro_name  — no-arg form
+        return UseNode(loader.construct_scalar(node))
+    elif isinstance(node, yaml.MappingNode):
+        # !use {macro_name: [args]} or !use {macro_name: {k: v}}
+        pairs = loader.construct_pairs(node, deep=True)
+        if len(pairs) != 1:
+            raise yaml.YAMLError(
+                f"!use mapping must have exactly one key, got {len(pairs)}")
+        name, args = pairs[0]
+        return UseNode(name, args)
+    else:
+        raise yaml.YAMLError(f"!use applied to unexpected node type: {type(node)}")
+
 yaml.add_constructor('!raw', raw_constructor, Loader=yaml.SafeLoader)
+yaml.add_constructor('!use', use_constructor, Loader=yaml.SafeLoader)
 
 
 # ---------------------------------------------------------------------------
-# !include — resolved at text level before parsing so anchors stay in scope
+# macro file loading
 # ---------------------------------------------------------------------------
 
-INCLUDE_RE = re.compile(r'^!include\s+(.+)$', re.MULTILINE)
-
-def resolve_includes(text, base_dir, seen=None):
+def load_macro_file(path):
     """
-    Recursively replace !include path lines with the contents of the referenced
-    file. Returns (expanded_text, [all_paths_touched]) so callers can build
-    dependency lists. Cycles are detected via the seen set.
+    Parse a macro file. Top-level keys are macro names; values are their
+    expansion bodies. Returns a dict of name -> value.
     """
-    if seen is None:
-        seen = set()
-    deps = []
-
-    def replacer(match):
-        raw_path = match.group(1).strip()
-        path = os.path.normpath(os.path.join(base_dir, raw_path))
-        if path in seen:
-            return ''
-        seen.add(path)
-        deps.append(path)
-        try:
-            included = open(path).read()
-        except FileNotFoundError:
-            raise SystemExit(f"error: !include not found: {path}\n  referenced from: {base_dir}")
-        child_text, child_deps = resolve_includes(
-            included, os.path.dirname(path), seen
-        )
-        deps.extend(child_deps)
-        return child_text.rstrip()
-
-    expanded = INCLUDE_RE.sub(replacer, text)
-    return expanded, deps
-
-
-# ---------------------------------------------------------------------------
-# file loading
-# ---------------------------------------------------------------------------
-
-def load_files(paths):
-    """
-    Read all files, expanding !include directives, then separate definitions
-    blocks from module blocks. Returns (definition_texts, module_entries) where
-    each module entry is (module_text, [dep_paths]).
-    """
-    definition_texts = []
-    module_entries = []
-
-    for path in paths:
-        raw = open(path).read()
-        text, deps = resolve_includes(raw, os.path.dirname(os.path.abspath(path)))
-        all_deps = [path] + deps
-        defs, mods = split_file(text)
-        if defs:
-            definition_texts.append(defs)
-        for mod in mods:
-            module_entries.append((mod, all_deps))
-
-    return definition_texts, module_entries
-
-
-def split_file(text):
-    """
-    Split a file into (definitions_text, [module_texts]).
-    Uses text-level inspection so we never parse a definitions chunk in
-    isolation — anchors stay intact for cross-document resolution.
-    """
-    docs = re.split(r'^---\s*$', text, flags=re.MULTILINE)
-    docs = [d.strip() for d in docs if d.strip()]
-
-    definitions_text = ""
-    module_texts = []
-
-    for doc in docs:
-        keys = set(re.findall(r'^(\S+):', doc, re.MULTILINE))
-        if 'definitions' in keys:
-            definitions_text += doc + "\n"
-        if 'module' in keys:
-            module_texts.append(doc)
-
-    return definitions_text, module_texts
-
-
-# ---------------------------------------------------------------------------
-# parsing — prepend definitions so anchors are in scope
-# ---------------------------------------------------------------------------
-
-def parse_module(definitions_text, module_text):
-    """Parse a module document with definitions in scope."""
     try:
-        return yaml.safe_load(definitions_text + "\n" + module_text)
+        text = open(path).read()
+    except FileNotFoundError:
+        raise SystemExit(f"error: include not found: {path}")
+    try:
+        doc = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise SystemExit(f"error: yaml parse failed:\n  {e}")
+        raise SystemExit(f"error: yaml parse failed in {path}:\n  {e}")
+    if doc is None:
+        return {}
+    if not isinstance(doc, dict):
+        raise SystemExit(
+            f"error: macro file must be a mapping at the top level: {path}")
+    if 'module' in doc:
+        raise SystemExit(
+            f"error: cannot include a module file: {path}")
+    return doc
+
+
+def build_macro_table(paths, base_dir):
+    """
+    Load each macro file in order, returning a combined macro table.
+    Later files do not override earlier ones — module-local macros handle
+    overrides separately by merging after this call.
+    """
+    table = {}
+    for rel_path in paths:
+        path = os.path.normpath(os.path.join(base_dir, rel_path))
+        macros = load_macro_file(path)
+        table.update(macros)
+    return table
 
 
 # ---------------------------------------------------------------------------
-# emission helpers
+# !use expansion
+# ---------------------------------------------------------------------------
+
+def substitute(value, params, args_dict):
+    """
+    Recursively substitute parameter names with argument values throughout
+    value. params is a list of param name strings (e.g. ['$post', '$post_id']).
+    args_dict maps param name -> argument value string.
+    """
+    if isinstance(value, str) and not isinstance(value, RawString):
+        for param, arg in args_dict.items():
+            value = value.replace(param, arg)
+        return value
+    elif isinstance(value, RawString):
+        result = str(value)
+        for param, arg in args_dict.items():
+            result = result.replace(param, arg)
+        return RawString(result)
+    elif isinstance(value, list):
+        return [substitute(item, params, args_dict) for item in value]
+    elif isinstance(value, dict):
+        return {
+            substitute(k, params, args_dict): substitute(v, params, args_dict)
+            for k, v in value.items()
+        }
+    elif isinstance(value, UseNode):
+        new_name = value.name
+        for param, arg in args_dict.items():
+            new_name = new_name.replace(param, arg)
+        new_args = substitute(value.args, params, args_dict) \
+            if value.args is not None else None
+        return UseNode(new_name, new_args)
+    else:
+        return value
+
+
+def resolve_use_node(node, macro_table, stack):
+    """
+    Expand a single UseNode. Returns the expanded value (may be a list,
+    dict, string, etc.). Raises on unknown macro or cycle.
+    """
+    name = node.name
+    if name not in macro_table:
+        raise SystemExit(f"error: unknown macro: !use {name!r}")
+    if name in stack:
+        cycle = ' -> '.join(list(stack) + [name])
+        raise SystemExit(f"error: circular macro expansion: {cycle}")
+
+    macro_def = macro_table[name]
+
+    # Parameterized macro — has params: and body: keys
+    if isinstance(macro_def, dict) and 'params' in macro_def and 'body' in macro_def:
+        params = macro_def['params']   # list of '$name' strings
+        body   = copy.deepcopy(macro_def['body'])
+
+        if node.args is not None:
+            # build args_dict from positional list or named mapping
+            if isinstance(node.args, list):
+                if len(node.args) != len(params):
+                    raise SystemExit(
+                        f"error: macro {name!r} expects {len(params)} args, "
+                        f"got {len(node.args)}")
+                args_dict = dict(zip(params, node.args))
+            elif isinstance(node.args, dict):
+                # named args — keys may omit the leading $ for convenience
+                args_dict = {}
+                for param in params:
+                    key = param          # try '$name'
+                    alt = param.lstrip('$')  # try 'name'
+                    if key in node.args:
+                        args_dict[param] = node.args[key]
+                    elif alt in node.args:
+                        args_dict[param] = node.args[alt]
+                    else:
+                        raise SystemExit(
+                            f"error: macro {name!r} missing argument {param!r}")
+            else:
+                raise SystemExit(
+                    f"error: macro {name!r} args must be a list or mapping")
+            body = substitute(body, params, args_dict)
+        elif params:
+            raise SystemExit(
+                f"error: macro {name!r} requires arguments: {params}")
+
+        return expand(body, macro_table, stack | {name})
+
+    # Parameter-free macro — value is the expansion directly
+    expanded = copy.deepcopy(macro_def)
+    return expand(expanded, macro_table, stack | {name})
+
+
+def expand(value, macro_table, stack=None):
+    """
+    Recursively walk value, expanding all UseNodes encountered.
+    Returns the fully expanded value.
+    """
+    if stack is None:
+        stack = frozenset()
+
+    if isinstance(value, UseNode):
+        return expand(
+            resolve_use_node(value, macro_table, stack),
+            macro_table, stack)
+
+    elif isinstance(value, list):
+        result = []
+        for item in value:
+            expanded = expand(item, macro_table, stack)
+            # splice lists returned from sequence-context expansions
+            if isinstance(item, UseNode) and isinstance(expanded, list):
+                result.extend(expanded)
+            else:
+                result.append(expanded)
+        return result
+
+    elif isinstance(value, dict):
+        result = {}
+        for k, v in value.items():
+            if isinstance(k, UseNode):
+                # !use macro_name: — key-position !use merges expanded
+                # mapping keys into the parent (used for func/import shapes)
+                expanded_k = expand(resolve_use_node(k, macro_table, stack),
+                                    macro_table, stack)
+                if isinstance(expanded_k, dict):
+                    result.update(expanded_k)
+                else:
+                    raise SystemExit(
+                        f"error: !use {k.name!r} in key position must expand "
+                        f"to a mapping, got {type(expanded_k).__name__}")
+            else:
+                result[k] = expand(v, macro_table, stack)
+        return result
+
+    else:
+        return value
+
+
+# ---------------------------------------------------------------------------
+# module loading
+# ---------------------------------------------------------------------------
+
+def load_module(path):
+    """
+    Parse a module file. Returns (doc, macro_table, dep_paths).
+    Processes include: block, builds macro table, expands all !use tags.
+    """
+    base_dir = os.path.dirname(os.path.abspath(path))
+
+    try:
+        text = open(path).read()
+    except FileNotFoundError:
+        raise SystemExit(f"error: file not found: {path}")
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise SystemExit(f"error: yaml parse failed in {path}:\n  {e}")
+
+    if not isinstance(doc, dict) or 'module' not in doc:
+        raise SystemExit(f"error: no 'module:' key found in {path}")
+
+    # collect include: paths and build dep list
+    include_paths = doc.pop('include', []) or []
+    dep_paths = [path] + [
+        os.path.normpath(os.path.join(base_dir, p)) for p in include_paths
+    ]
+
+    # build macro table from included files
+    macro_table = build_macro_table(include_paths, base_dir)
+
+    # merge module-local macros (take precedence over included ones)
+    local_macros = doc.pop('macros', {}) or {}
+    macro_table.update(local_macros)
+
+    # expand all !use tags in the module doc
+    doc = expand(doc, macro_table)
+
+    return doc, dep_paths
+
+
+# ---------------------------------------------------------------------------
+# emission helpers  (unchanged from original)
 # ---------------------------------------------------------------------------
 
 def indent(lines, n=2):
     pad = " " * n
     return [pad + l for l in lines]
 
-
-# block/loop opcodes that require a matching end
 BLOCK_OPS = {'block', 'loop'}
-
-
-# ---------------------------------------------------------------------------
-# section emitters
-# ---------------------------------------------------------------------------
 
 def emit_import(name, spec):
     module_name, field_name = spec['from']
@@ -150,13 +296,11 @@ def emit_import(name, spec):
     type_str = "".join(params + result)
     return [f'(import "{module_name}" "{field_name}" (func {name}{type_str}))']
 
-
 def emit_memory(name, spec):
     lines = [f'(memory {name} {spec["pages"]})']
     if spec.get('export'):
         lines.append(f'(export "{spec["export"]}" (memory {name}))')
     return lines
-
 
 def emit_table(name, spec):
     reftype = spec.get('type', 'funcref')
@@ -165,14 +309,12 @@ def emit_table(name, spec):
         lines.append(f'(export "{spec["export"]}" (table {name}))')
     return lines
 
-
 def emit_global(name, spec):
     typ = spec['type']
     mutable = spec.get('mutable', False)
     init = spec['init']
     type_str = f'(mut {typ})' if mutable else typ
     return [f'(global {name} {type_str} ({typ}.const {init}))']
-
 
 def emit_data(segments):
     lines = []
@@ -187,21 +329,17 @@ def emit_data(segments):
             lines.append(f'(data (i32.const {offset}) "{hex_str}")')
     return lines
 
-
 def emit_elem(spec):
     funcs = ' '.join(spec['funcs'])
     return [f'(elem (i32.const {spec["offset"]}) {funcs})']
-
 
 def emit_type(name, spec):
     params = emit_params(spec.get('param', []))
     result = emit_result(spec.get('result'))
     return [f'(type {name} (func{"".join(params + result)}))']
 
-
 def emit_start(func_name):
     return [f'(start {func_name})']
-
 
 def emit_params(params):
     if not params:
@@ -215,14 +353,12 @@ def emit_params(params):
             out.append(f' (param {parts[0]})')
     return out
 
-
 def emit_result(result):
     if result is None:
         return []
     if isinstance(result, list):
         return [f' (result {" ".join(str(r) for r in result)})']
     return [f' (result {result})']
-
 
 def emit_locals(locals_):
     if not locals_:
@@ -233,54 +369,22 @@ def emit_locals(locals_):
         out.append(f'(local {parts[0]} {parts[1]})')
     return out
 
-
 def emit_body(instructions):
-    """
-    Emit a flat list of instructions.
-
-    block/loop use structured dict syntax — the key is the opcode (plus
-    optional label), and the value is the nested instruction list. `end` is
-    synthesized automatically:
-      - block $done:
-          - loop $top:
-              - ...
-              - br $top
-
-    if mappings have two forms:
-
-      flat form — one-armed guard, no result value:
-        - if:
-            - instruction
-            - ...
-
-      structured form — two-armed branch or value-producing if:
-        - if:
-            result: i32        # required when the if produces a value
-            then: [...]
-            else: [...]
-
-    !raw strings pass through to WAT verbatim.
-    """
     lines = []
     items = instructions if isinstance(instructions, list) else [instructions]
 
     for item in items:
-
         if isinstance(item, RawString):
             lines.append(item)
-
         elif isinstance(item, str):
             lines.append(item.strip())
-
         elif isinstance(item, dict):
             if 'if' in item:
                 spec = item['if']
                 lines.append('if')
                 if isinstance(spec, list):
-                    # flat form: if: [instructions] — one-armed guard, no result
                     lines.extend(indent(emit_body(spec)))
                 else:
-                    # structured form: if: then/else/result
                     if 'result' in spec:
                         lines[-1] = f'if (result {spec["result"]})'
                     if 'then' in spec:
@@ -299,18 +403,17 @@ def emit_body(instructions):
                         lines.append('end')
                     else:
                         lines.append(f'{k} {v}' if v is not None else k)
-
         elif isinstance(item, list):
             lines.extend(emit_body(item))
         else:
-            raise SystemExit(f"error: unexpected instruction type {type(item).__name__}: {item!r}")
+            raise SystemExit(
+                f"error: unexpected instruction type {type(item).__name__}: {item!r}")
 
     return lines
 
-
 def emit_func(name, spec):
-    params = emit_params(spec.get('param', []))
-    result = emit_result(spec.get('result'))
+    params  = emit_params(spec.get('param', []))
+    result  = emit_result(spec.get('result'))
     locals_ = emit_locals(spec.get('local', []))
 
     lines = [f'(func {name}{"".join(params + result)}']
@@ -318,24 +421,24 @@ def emit_func(name, spec):
         lines.append(f'  {l}')
     lines.extend(indent(emit_body(spec.get('body', []))))
     lines.append(')')
-
     return lines
 
 
 # ---------------------------------------------------------------------------
-# module emitter — top level
+# module emitter
 # ---------------------------------------------------------------------------
 
-# WAT requires a specific declaration order. We bucket items in one pass
-# then emit each bucket in order.
-SECTION_ORDER = ['type', 'import', 'memory', 'table', 'global', 'data', 'elem', 'func', 'export', 'start']
+SECTION_ORDER = [
+    'type', 'import', 'memory', 'table', 'global',
+    'data', 'elem', 'func', 'export', 'start'
+]
 
 def emit_module(doc):
     name = doc['module']
     buckets = {s: [] for s in SECTION_ORDER}
 
     for key, val in doc.items():
-        if key in ('definitions', 'module'):
+        if key in ('module',):
             continue
         elif key == 'data':
             buckets['data'].extend(emit_data(val))
@@ -356,12 +459,15 @@ def emit_module(doc):
         elif key.startswith('func '):
             func_id = key.split(' ', 1)[1]
             export_val = val.get('export') if isinstance(val, dict) else None
-            export_name = func_id.lstrip('$') if export_val is True else export_val or None
+            export_name = func_id.lstrip('$') \
+                if export_val is True else export_val or None
             buckets['func'].extend(emit_func(func_id, val))
             if export_name:
-                buckets['export'].append(f'(export "{export_name}" (func {func_id}))')
+                buckets['export'].append(
+                    f'(export "{export_name}" (func {func_id}))')
         else:
-            raise SystemExit(f"error: unknown key in module '{name}': '{key}'")
+            raise SystemExit(
+                f"error: unknown key in module '{name}': '{key}'")
 
     lines = [f'(module {name}']
     for section in SECTION_ORDER:
@@ -375,7 +481,6 @@ def emit_module(doc):
 # ---------------------------------------------------------------------------
 
 def write_depfile(dep_path, target, deps):
-    """Write a make-compatible .d dependency file."""
     dep_list = ' '.join(deps)
     open(dep_path, 'w').write(f'{target}: {dep_list}\n')
 
@@ -385,12 +490,8 @@ def main():
         print(__doc__)
         sys.exit(0)
 
-    paths = sys.argv[1:]
-    definition_texts, module_entries = load_files(paths)
-    preamble = '\n'.join(definition_texts)
-
-    for module_text, deps in module_entries:
-        doc = parse_module(preamble, module_text)
+    for path in sys.argv[1:]:
+        doc, deps = load_module(path)
         wat = emit_module(doc)
         mod_name = doc['module'].lstrip('$')
         out_path = f'{mod_name}.wat'
