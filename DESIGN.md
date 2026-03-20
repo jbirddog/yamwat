@@ -57,8 +57,8 @@ This lets a module override a shared macro without modifying the host contract.
 ```yaml
 # module file — with local macros
 include:
-  - host/post.yaml
-  - host/verdicts.yaml
+  - post.yaml
+  - verdicts.yaml
 
 module: $standard_policy
 
@@ -73,7 +73,7 @@ import $get_post:
   !use import_get_post
 
 func $moderate:
-  !use moderate_func
+  !use moderate_func:
   body:
     - !use {load_post: {post: $post, post_id: $post_id}}
     - !use {post_score: {post: $post}}
@@ -135,18 +135,37 @@ Block style for readability with multiple arguments:
     post_id: $id
 ```
 
-**Mapping context** — `!use` in a mapping merges the macro's keys into the
-parent mapping:
+**Mapping context** — `!use` in a mapping expands a macro whose value is a
+mapping and contributes its keys to the declaration. Two forms are needed
+depending on whether the `!use` is the sole content of the declaration or
+appears alongside sibling keys.
+
+**Sole value form** — when `!use` is the entire value of a declaration key,
+write it as a tagged scalar value. The expansion replaces the value directly:
 
 ```yaml
-import $get_post:
-  !use import_get_post          # contributes: from, param
+memory $mem:
+  !use post_mem             # sole value — expands to {pages: 1, export: mem}
 
+import $get_post:
+  !use import_get_post      # sole value — expands to {from: ..., param: ...}
+```
+
+**Key form** — when `!use` appears alongside sibling keys in the same mapping,
+write it as a key with a colon and no value. The expansion is merged into the
+parent mapping alongside the siblings:
+
+```yaml
 func $moderate:
-  !use moderate_func            # contributes: export, param, result, local
-  body:
+  !use moderate_func:       # key form — merges export, param, result, local
+  body:                     # sibling key — preserved alongside the expansion
     - ...
 ```
+
+The colon is what distinguishes the two forms. A tagged scalar value (`!use
+name`) cannot coexist with sibling keys in the same mapping — that is a YAML
+constraint, not a yamwat one. The key form (`!use name:`) sidesteps it by
+making the `!use` a mapping key rather than a value.
 
 **Sequence context** — `!use` in a sequence splices the macro's instructions
 inline:
@@ -193,7 +212,7 @@ A macro without `params:` has its entire value used as the expansion body, with
 no substitution performed.
 
 ```yaml
-# host/post.yaml
+# post.yaml
 
 # Post struct layout written by the host into wasm linear memory.
 #
@@ -262,7 +281,7 @@ post_mem:
 ```
 
 ```yaml
-# host/verdicts.yaml
+# verdicts.yaml
 
 verdict_approve:  [i32.const 0]
 verdict_hold:     [i32.const 1]
@@ -408,7 +427,7 @@ when producing a value):
 
 ## a complete example
 
-`standard_policy.yaml` under the new format. The macro file (`host/post.yaml`)
+`standard_policy.yaml` under the new format. The macro file (`post.yaml`)
 gains explicit `params:` and `body:` structure; call sites gain explicit
 argument bindings. The policy body structure is otherwise unchanged.
 
@@ -416,8 +435,8 @@ argument bindings. The policy body structure is otherwise unchanged.
 # standard_policy.yaml
 
 include:
-  - host/post.yaml
-  - host/verdicts.yaml
+  - post.yaml
+  - verdicts.yaml
 
 module: $standard_policy
 
@@ -428,7 +447,7 @@ import $get_post:
   !use import_get_post
 
 func $moderate:
-  !use moderate_func
+  !use moderate_func:
   body:
     - !use {load_post: {post: $post, post_id: $post_id}}
 
@@ -487,7 +506,7 @@ structure.
 
 Rather than calling host outcome functions directly, policies return an i32
 verdict. The host acts on the return value after `moderate` returns. Verdicts
-are defined in `host/verdicts.yaml` and ordered by severity:
+are defined in `verdicts.yaml` and ordered by severity:
 
 ```
 approve(0) < hold(1) < escalate(2) < remove(3)
@@ -505,7 +524,7 @@ Every policy exports a `moderate` function with the same signature:
 
 ```yaml
 include:
-  - host/verdicts.yaml
+  - verdicts.yaml
 
 module: $community_1_policy
 
