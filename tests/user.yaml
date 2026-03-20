@@ -1,0 +1,41 @@
+# User struct layout written by the host into wasm linear memory.
+#
+#   offset  field            type
+#   ------  -----            ----
+#        0  age              i32
+#        4  residence        i32    1=CA, 2=NV, 3=other
+#        8  membership_tier  i32    0=none, 1=basic, 2=premium
+
+user_age:
+  params: [$ptr]
+  body:
+    - local.get $ptr
+    - i32.load
+
+user_residence:
+  params: [$ptr]
+  body:
+    - local.get $ptr
+    - !raw "i32.load offset=4"
+
+user_membership_tier:
+  params: [$ptr]
+  body:
+    - local.get $ptr
+    - !raw "i32.load offset=8"
+
+import_get_user:
+  from: [env, get_user]
+  param: [$user_id i32, $ptr i32]
+
+import_grant:
+  from: [env, grant]
+  param: [$user_id i32]
+
+import_deny:
+  from: [env, deny]
+  param: [$user_id i32]
+
+user_mem:
+  pages: 1
+  export: mem

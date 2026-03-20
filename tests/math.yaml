@@ -1,6 +1,6 @@
 include:
-  - env.logging.yaml
-  - env.signatures.yaml
+  - env_logging.yaml
+  - env_signatures.yaml
 
 module: $math
 
