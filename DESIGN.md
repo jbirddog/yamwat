@@ -22,6 +22,8 @@ Key properties this enables:
 - **portability** — same host functions, different wasm blobs per context
   (e.g. `validate_order_for_new_york.wasm`, `validate_order_for_texas.wasm`)
 - **testability** — stub the host imports, test workflow logic in isolation
+- **composability** — policies can import other policies as functions, building
+  higher-level coordinators from reusable leaf policies
 
 yamwat is not intended as a general-purpose WAT authoring tool, though nothing
 prevents that use. It shines when the boundary between host and workflow needs
@@ -220,6 +222,17 @@ definitions:
       - !raw "i32.load offset=4"
 ```
 
+Flow style works well for single-instruction snippets:
+
+```yaml
+definitions:
+  snippets:
+    :: &verdict_approve   [i32.const 0]
+    :: &verdict_hold      [i32.const 1]
+    :: &verdict_escalate  [i32.const 2]
+    :: &verdict_remove    [i32.const 3]
+```
+
 `::` is just a conventional key name with no special compiler support. It works
 because PyYAML silently accepts duplicate keys within a mapping (last value
 wins), which is technically out of spec but is consistent and intentional here
@@ -281,6 +294,127 @@ capability surface. Both sides work from the same file.
 
 The include list at the top of a workflow is also its own form of documentation
 — it tells a reader exactly which host capabilities the policy depends on.
+
+---
+
+## policy composition
+
+Policies can import other policies as functions. This enables coordinator
+policies that delegate to leaf policies, compose their verdicts, and return a
+single result — without the host needing to know anything about the composition
+structure.
+
+### the verdict model
+
+Rather than calling host outcome functions directly, policies return an i32
+verdict. The host acts on the return value after `moderate` returns. A shared
+`host/verdicts.yaml` defines the enum:
+
+```yaml
+definitions:
+  snippets:
+    :: &verdict_approve   [i32.const 0]
+    :: &verdict_hold      [i32.const 1]
+    :: &verdict_escalate  [i32.const 2]
+    :: &verdict_remove    [i32.const 3]
+```
+
+Ordered by severity — `approve < hold < escalate < remove` — so coordinators
+can compare verdicts arithmetically.
+
+Every policy exports a `moderate` function with the same signature:
+
+```yaml
+(post_id: i32) -> i32
+```
+
+It does not matter whether the implementation is a flat rule chain or a
+coordinator calling three sub-policies. The host sees the same interface either
+way.
+
+### importing a sub-policy
+
+A coordinator imports sub-policies by naming the policy module and its exported
+function. The local name avoids collisions when importing multiple policies:
+
+```yaml
+import $standard_moderate:
+  from: [standard_policy, moderate]
+  param: [$post_id i32]
+  result: i32
+
+import $no_curse_words_moderate:
+  from: [no_curse_words_policy, moderate]
+  param: [$post_id i32]
+  result: i32
+```
+
+The host wires the right instance to each import slot at load time, the same way
+it wires `env` functions. Any import whose module is not `env` is a policy
+dependency — the host resolves them recursively by inspecting the wasm import
+section before instantiation.
+
+### coordinator patterns
+
+**Veto chain** — first non-approve verdict wins. Uses the `block`/`br_if`
+early-exit pattern with `local.tee` to store and test the verdict in one step:
+
+```yaml
+func $moderate:
+  export: True
+  param: [$post_id i32]
+  result: i32
+  local: [$verdict i32]
+  body:
+    - block $done:
+        - local.get $post_id
+        - call $standard_moderate
+        - local.tee $verdict
+        - br_if $done
+
+        - local.get $post_id
+        - call $no_curse_words_moderate
+        - local.tee $verdict
+        - br_if $done
+
+        - *verdict_approve
+        - local.set $verdict
+
+    - local.get $verdict
+```
+
+**Strictest wins** — calls all sub-policies and takes the most severe verdict.
+Since verdicts are ordered by severity, this is a single `i32.gt_s`:
+
+```yaml
+func $moderate:
+  export: True
+  param: [$post_id i32]
+  result: i32
+  body:
+    - local.get $post_id
+    - call $no_religion_moderate
+    - local.get $post_id
+    - call $max_three_flags_moderate
+    - i32.gt_s
+```
+
+### self-describing dependencies
+
+The wasm import section lists every `(module, field)` pair a binary needs. A
+coordinator's dependencies are therefore declared in the binary itself — no
+separate manifest is required. The host can inspect imports before instantiation
+and build the full dependency graph automatically. The import list at the top of
+a coordinator yaml is also its own documentation: it tells a reader exactly
+which policies this coordinator depends on.
+
+### the host stays thin
+
+Leaf policies only need `get_post` from `env` — no outcome functions. The host
+provides data capabilities; policies provide logic. Outcome functions
+(`approve`, `hold`, `escalate`, `remove`) move from wasm imports to plain host
+code that acts on the verdict return value. Adding a new leaf policy requires no
+host changes.
 
 ---
 
@@ -377,6 +511,22 @@ instance is re-entered the same way either way.
 
 ```
 uv run run.py --report_id=1
+```
+
+### content_moderation
+
+A community content moderation system demonstrating the verdict model and policy
+composition. Leaf policies (`standard_policy`, `strict_policy`) return i32
+verdicts instead of calling host outcome functions directly. Coordinator policies
+(`community_1_policy`, `community_34_policy`) import leaf policies as functions
+and compose their verdicts using the veto chain or strictest-wins pattern.
+
+The host loads policies by inspecting the wasm import section recursively —
+no manifest required. Adding a new community policy requires no host changes.
+
+```
+uv run host.py --post_id=1
+uv run host.py --community_id=2
 ```
 
 ---
