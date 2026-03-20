@@ -1,9 +1,7 @@
-1. In definition yaml files, should the `key: &key` be the default shown or something like `_: &key`, `:: &key`
-1. Reference other yamls (subworkflows)
 1. Diagram from yaml(s)
-1. Test nested includes
 1. host/moderator/util.yaml
 1. Text level `::` handling
+1. Split some yaml parts out into own lib
 
 ## wasm as config
 
