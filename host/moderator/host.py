@@ -6,8 +6,8 @@
 # ]
 # ///
 # host.py — content moderation host runner
-# loads all known policies at startup, routes posts to the right policy
-# via community_id, calls moderate(post_id) on the appropriate instance
+# loads policies on demand by inspecting wasm imports recursively,
+# routes posts to the right policy via community_id
 #
 # usage:
 #   uv run host.py --post_id=1
@@ -17,6 +17,17 @@ import argparse
 import os
 import struct
 from wasmtime import Engine, Store, Linker, Module, FuncType, ValType, Func
+
+# ---------------------------------------------------------------------------
+# verdicts — mirrors verdicts.yaml
+# ---------------------------------------------------------------------------
+
+VERDICTS = {
+    0: "APPROVE",
+    1: "HOLD",
+    2: "ESCALATE",
+    3: "REMOVE",
+}
 
 # ---------------------------------------------------------------------------
 # post database
@@ -63,14 +74,16 @@ COMMUNITY_POLICY = {
 }
 
 # ---------------------------------------------------------------------------
-# host functions
+# host env functions
 # ---------------------------------------------------------------------------
 
-def make_host_functions(store, memory_ref):
+def make_env_functions(store, memory_ref):
     """
-    Returns a dict of host functions wired to the given store.
+    Returns the env capability functions wired to the given store.
+    These are the only functions the host provides — outcome decisions
+    are now made by the host after moderate() returns a verdict.
     memory_ref is a mutable list so the memory export can be set
-    after instantiation and still be visible to the closures.
+    after instantiation and still be visible to the closure.
     """
     i32 = ValType.i32()
 
@@ -85,74 +98,88 @@ def make_host_functions(store, memory_ref):
             is_repost, community_id, author_id)
         memory_ref[0].write(store, packed, ptr)
 
-    def approve(post_id):
-        print(f"  => APPROVE")
-
-    def hold(post_id):
-        print(f"  => HOLD")
-
-    def remove(post_id):
-        print(f"  => REMOVE")
-
-    def escalate(post_id):
-        print(f"  => ESCALATE")
-
     return {
-        "env": {
-            "get_post": (FuncType([i32, i32], []),  get_post),
-            "approve":  (FuncType([i32],      []),  approve),
-            "hold":     (FuncType([i32],      []),  hold),
-            "remove":   (FuncType([i32],      []),  remove),
-            "escalate": (FuncType([i32],      []),  escalate),
-        }
+        "get_post": (FuncType([i32, i32], []), get_post),
     }
 
 # ---------------------------------------------------------------------------
-# policy cache
+# policy loader
 # ---------------------------------------------------------------------------
+
+def load_policy(name, here, engine, store, linker, loaded):
+    """
+    Recursively load a policy and all its dependencies.
+    Dependencies are discovered by inspecting the wasm import section —
+    any import whose module is not 'env' is a policy dependency.
+    Results are cached in loaded: name -> exports.
+    """
+    if name in loaded:
+        return loaded[name]
+
+    wasm_path = os.path.join(here, f"{name}.wasm")
+    if not os.path.exists(wasm_path):
+        raise SystemExit(f"error: {wasm_path} not found — run yamwat + wat2wasm first")
+
+    wasm = open(wasm_path, "rb").read()
+    module = Module(engine, wasm)
+
+    # inspect imports — load any policy dependencies first
+    for imp in module.imports:
+        if imp.module != "env":
+            dep_exports = load_policy(imp.module, here, engine, store, linker, loaded)
+            # wire the dependency's moderate function into the linker
+            # under its module name so this policy can import it
+            i32 = ValType.i32()
+            linker.define(
+                store, imp.module, imp.name,
+                Func(store, FuncType([i32], [i32]),
+                     lambda post_id, e=dep_exports: e["moderate"](store, post_id))
+            )
+
+    # wire env functions for leaf policies
+    memory_ref = [None]
+    env_funcs = make_env_functions(store, memory_ref)
+
+    for func_name, (ftype, impl) in env_funcs.items():
+        # linker.define is idempotent for the same name so env functions
+        # defined for a previous policy are safely reused here
+        try:
+            linker.define(store, "env", func_name, Func(store, ftype, impl))
+        except Exception:
+            pass  # already defined for this store
+
+    instance = linker.instantiate(store, module)
+    exports = instance.exports(store)
+
+    if "mem" in exports:
+        memory_ref[0] = exports["mem"]
+
+    loaded[name] = exports
+    print(f"loaded {name}.wasm")
+    return exports
+
 
 def load_policies(engine, here):
     """
-    Load and instantiate one wasm instance per policy at startup.
-    Returns a dict of policy_name -> (instance, store).
-    Each instance gets its own store and memory_ref.
+    Load and instantiate all community policies.
+    A single store and linker are shared so wasm instances can
+    cross-call each other's exported functions.
+    Returns a dict of policy_name -> exports.
     """
-    policies = {}
+    store = Store(engine)
+    linker = Linker(engine)
+    loaded = {}
 
-    for community_id, policy_name in COMMUNITY_POLICY.items():
-        if policy_name in policies:
-            continue
+    for policy_name in COMMUNITY_POLICY.values():
+        load_policy(policy_name, here, engine, store, linker, loaded)
 
-        wasm_path = os.path.join(here, f"{policy_name}.wasm")
-        if not os.path.exists(wasm_path):
-            raise SystemExit(f"error: {wasm_path} not found — run yamwat + wat2wasm first")
-
-        wasm = open(wasm_path, "rb").read()
-        store = Store(engine)
-        linker = Linker(engine)
-        memory_ref = [None]
-
-        host_functions = make_host_functions(store, memory_ref)
-        for module_name, funcs in host_functions.items():
-            for func_name, (ftype, impl) in funcs.items():
-                linker.define(store, module_name, func_name, Func(store, ftype, impl))
-
-        instance = linker.instantiate(store, Module(engine, wasm))
-        exports = instance.exports(store)
-        if "mem" not in exports:
-            raise SystemExit(f"error: {policy_name}.wasm does not export 'mem' — required by this host")
-        memory_ref[0] = exports["mem"]
-
-        policies[policy_name] = (exports, store)
-        print(f"loaded {policy_name}.wasm")
-
-    return policies
+    return store, loaded
 
 # ---------------------------------------------------------------------------
 # moderation
 # ---------------------------------------------------------------------------
 
-def moderate_post(post_id, policies):
+def moderate_post(post_id, store, loaded):
     post = POSTS.get(post_id)
     if not post:
         print(f"unknown post_id {post_id}")
@@ -164,11 +191,13 @@ def moderate_post(post_id, policies):
         print(f"  no policy for community_id {community_id}")
         return
 
-    exports, store = policies[policy_name]
+    exports = loaded[policy_name]
 
     print(f"post {post_id}: {post['desc']}")
     print(f"  policy: {policy_name}")
-    exports["moderate"](store, post_id)
+
+    verdict = exports["moderate"](store, post_id)
+    print(f"  => {VERDICTS.get(verdict, f'unknown({verdict})')}")
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +215,12 @@ def main():
     engine = Engine()
 
     print("--- loading policies ---")
-    policies = load_policies(engine, here)
+    store, loaded = load_policies(engine, here)
     print()
 
     print("--- moderating ---")
     if args.post_id:
-        moderate_post(args.post_id, policies)
+        moderate_post(args.post_id, store, loaded)
     elif args.community_id:
         posts = [
             pid for pid, p in POSTS.items()
@@ -201,7 +230,7 @@ def main():
             print(f"no posts for community_id {args.community_id}")
             return
         for post_id in posts:
-            moderate_post(post_id, policies)
+            moderate_post(post_id, store, loaded)
             print()
 
 

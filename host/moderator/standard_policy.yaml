@@ -1,4 +1,5 @@
 !include host/post.yaml
+!include host/verdicts.yaml
 
 ---
 # standard_policy.yaml — baseline content moderation policy
@@ -20,18 +21,6 @@ memory $mem:
 import $get_post:
   <<: *import_get_post
 
-import $approve:
-  <<: *import_approve
-
-import $hold:
-  <<: *import_hold
-
-import $remove:
-  <<: *import_remove
-
-import $escalate:
-  <<: *import_escalate
-
 func $moderate:
   <<: *moderate_func
   body:
@@ -42,8 +31,7 @@ func $moderate:
     - i32.const 10
     - i32.ge_s
     - if:
-        - local.get $post_id
-        - call $remove
+        - *verdict_remove
         - return
 
     # escalate if is_repost AND flag_count > 0
@@ -53,8 +41,7 @@ func $moderate:
     - i32.gt_s
     - i32.and
     - if:
-        - local.get $post_id
-        - call $escalate
+        - *verdict_escalate
         - return
 
     # hold if author_tier < 1 (new account)
@@ -62,8 +49,7 @@ func $moderate:
     - i32.const 1
     - i32.lt_s
     - if:
-        - local.get $post_id
-        - call $hold
+        - *verdict_hold
         - return
 
     # hold if score <= -10
@@ -71,10 +57,8 @@ func $moderate:
     - i32.const -10
     - i32.le_s
     - if:
-        - local.get $post_id
-        - call $hold
+        - *verdict_hold
         - return
 
     # default: approve
-    - local.get $post_id
-    - call $approve
+    - *verdict_approve
