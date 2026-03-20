@@ -1,6 +1,6 @@
 include:
-  - post.yaml
-  - verdicts.yaml
+  - host/post.yaml
+  - host/verdicts.yaml
 
 # strict content moderation policy
 # intended for communities that require tighter moderation standards

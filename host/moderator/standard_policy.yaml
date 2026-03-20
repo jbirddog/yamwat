@@ -1,6 +1,6 @@
 include:
-  - post.yaml
-  - verdicts.yaml
+  - host/post.yaml
+  - host/verdicts.yaml
 
 # baseline content moderation policy
 # permissive defaults: only removes heavily flagged content,
