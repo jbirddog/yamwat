@@ -1,24 +1,14 @@
-# async_approval.yaml — a continuation workflow using function table callbacks
+# a continuation workflow using function table callbacks
 # an expense report moves through manager approval then finance review
 # the workflow owns the sequencing; the host owns async execution
-# the host supplies capabilities; the workflow supplies policy and order
 
 module: $async_approval
-
-# --- types ---
-# two signatures are needed for call_indirect on the host side
 
 type $entry_t:
   param: [$report_id i32]
 
 type $decision_t:
   param: [$report_id i32, $approved i32]
-
-# --- table ---
-# the host calls back into the workflow via this table
-# index 0: process_report      (i32) -> ()       initial entry point
-# index 1: on_manager_decision (i32, i32) -> ()  callback after manager acts
-# index 2: on_finance_decision (i32, i32) -> ()  callback after finance acts
 
 table $callbacks:
   size: 3
@@ -28,8 +18,6 @@ table $callbacks:
 elem $callbacks:
   offset: 0
   funcs: [$process_report, $on_manager_decision, $on_finance_decision]
-
-# --- imports ---
 
 import $validate_report:
   from: [env, validate_report]
@@ -52,10 +40,8 @@ import $decline_report:
   from: [env, decline_report]
   param: [$report_id i32]
 
-# --- entry point ---
-
 func $process_report:
-  export: True
+  export: true
   param: [$report_id i32]
   body:
     - local.get $report_id
@@ -67,13 +53,11 @@ func $process_report:
           - call $decline_report
           - return
     - local.get $report_id
-    - i32.const 1           # callback index: on_manager_decision
+    - i32.const 1
     - call $request_manager_approval
 
-# --- callbacks ---
-
 func $on_manager_decision:
-  export: True
+  export: true
   param: [$report_id i32, $approved i32]
   body:
     - local.get $approved
@@ -84,11 +68,11 @@ func $on_manager_decision:
           - call $decline_report
           - return
     - local.get $report_id
-    - i32.const 2           # callback index: on_finance_decision
+    - i32.const 2
     - call $request_finance_review
 
 func $on_finance_decision:
-  export: True
+  export: true
   param: [$report_id i32, $approved i32]
   body:
     - local.get $approved

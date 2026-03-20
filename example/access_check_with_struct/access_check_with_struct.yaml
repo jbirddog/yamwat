@@ -1,7 +1,7 @@
-!include host_types.yaml
+include:
+  - user.yaml
 
----
-# access_check_with_struct.yaml — policy over a richer user struct
+# policy over a richer user struct
 # the host writes a user record into linear memory; the workflow reads fields
 # and enforces a compound policy: age >= 21, not a CA resident, membership required
 # the host supplies the data; the workflow supplies the policy
@@ -9,20 +9,19 @@
 module: $access_check_with_struct
 
 memory $mem:
-  pages: 1
-  export: mem
+  !use user_mem
 
 import $get_user:
-  <<: *import_get_user
+  !use import_get_user
 
 import $grant:
-  <<: *import_grant
+  !use import_grant
 
 import $deny:
-  <<: *import_deny
+  !use import_deny
 
 func $check_access:
-  export: True
+  export: true
   param: [$user_id i32]
   local: [$ptr i32]
   body:
@@ -35,22 +34,19 @@ func $check_access:
 
     - block $denied:
         # age >= 21
-        - local.get $ptr
-        - *user_age
+        - !use {user_age: [$ptr]}
         - i32.const 21
         - i32.lt_s
         - br_if $denied
 
         # residence != 1 (CA)
-        - local.get $ptr
-        - *user_residence
+        - !use {user_residence: [$ptr]}
         - i32.const 1
         - i32.eq
         - br_if $denied
 
         # membership_tier >= 1 (basic or premium)
-        - local.get $ptr
-        - *user_membership_tier
+        - !use {user_membership_tier: [$ptr]}
         - i32.const 1
         - i32.lt_s
         - br_if $denied
