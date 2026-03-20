@@ -33,44 +33,131 @@ to be clear, readable, and easy to review.
 
 ## yaml structure
 
-The YAML file structure tries to be as 1:1 with WAT as possible. A module
-document maps directly to a WAT `(module ...)` block. Top-level keys correspond
-to WAT declarations: `import`, `func`, `memory`, `table`, `type`, `global`,
-`data`, `elem`, `start`.
+yamwat files are valid YAML 1.2. Each file is a single document — no `---`
+multi-document separators. A file's role is determined by its top-level keys.
 
-A YAML file may contain one or more documents separated by `---`. If a
-definitions block precedes the module, the `---` separator is required:
+A **macro file** has macro names as its top-level keys — there is no wrapper
+block. Since a file named in an `include:` block can only contain macros, a
+wrapper key would be redundant; the compiler knows the context from how the
+file was loaded. A macro file emits no WAT directly and is only valid as an
+`include:` target. Including a module file is an error.
+
+A **module file** contains a `module:` key and produces WAT output. It may also
+contain:
+
+- `include:` — a list of macro files to load
+- `macros:` — module-local macro declarations
+- WAT declaration keys: `import $id`, `func $id`, `memory $id`, `table $id`,
+  `type $id`, `global $id`, `data`, `elem`, `start`
+
+Module-local macros are available within that file only. If a local macro name
+collides with one from an included file, the local declaration takes precedence.
+This lets a module override a shared macro without modifying the host contract.
 
 ```yaml
-definitions:
-  snippets:
-    my_snippet: &my_snippet
-      - i32.const 0
+# module file — with local macros
+include:
+  - host/post.yaml
+  - host/verdicts.yaml
 
----
-module: $my_module
-...
+module: $standard_policy
+
+macros:
+  # local override: treat scores <= -5 as low rather than the host default of -10
+  low_score_threshold: [i32.const -5]
+
+memory $mem:
+  !use post_mem
+
+import $get_post:
+  !use import_get_post
+
+func $moderate:
+  !use moderate_func
+  body:
+    - !use {load_post: {post: $post, post_id: $post_id}}
+    - !use {post_score: {post: $post}}
+    - !use low_score_threshold
+    - i32.le_s
+    - if:
+        - !use verdict_hold
+        - return
+    - !use verdict_approve
 ```
 
-If the file contains only a module, the `---` separator is optional.
+The `include:` block is a file-level directive processed before the module is
+compiled. It is distinct from `import $id:` declarations, which are WAT import
+statements. The `$` sigil on `import $id:` makes the two unambiguous in context.
 
 ---
 
 ## custom tags
 
-### `!include`
+### `!use`
 
-Pulls in the contents of another file before YAML parsing, so anchors defined
-in the included file remain in scope throughout the current file:
+Expands a named macro inline at the point of use. The compiler looks up the
+name in the macros loaded via `include:` and splices the expansion in place
+before emitting WAT. `!use` is always resolved by the compiler, never by the
+YAML parser — macro files are parsed independently with no cross-file anchor
+scope required.
+
+**No-argument form** — a tagged scalar:
 
 ```yaml
-!include host_types.yaml
+- !use load_post
 ```
 
-`!include` is resolved at the text level, not the parse level. This means
-anchors defined in included files can be referenced anywhere in the including
-file. The transpiler also generates `.d` dependency files listing all included
-paths, suitable for use with make-style build systems.
+**Parameterized form** — a tagged mapping with a single key. The key is the
+macro name; its value is either a sequence of arguments (positional) or a
+mapping of argument names to values (named). All parameters declared in the
+macro's `params:` list are required.
+
+Positional — arguments are matched to params by order. Concise when the
+call-site names match the param names:
+
+```yaml
+- !use {load_post: [$post, $post_id]}
+```
+
+Named — arguments are matched by name. Use when call-site local names differ
+from the macro's param names, or when explicitness aids readability:
+
+```yaml
+- !use {load_post: {post: $ptr, post_id: $id}}
+```
+
+Block style for readability with multiple arguments:
+
+```yaml
+- !use
+  load_post:
+    post: $ptr
+    post_id: $id
+```
+
+**Mapping context** — `!use` in a mapping merges the macro's keys into the
+parent mapping:
+
+```yaml
+import $get_post:
+  !use import_get_post          # contributes: from, param
+
+func $moderate:
+  !use moderate_func            # contributes: export, param, result, local
+  body:
+    - ...
+```
+
+**Sequence context** — `!use` in a sequence splices the macro's instructions
+inline:
+
+```yaml
+body:
+  - !use load_post              # expands to one or more instructions
+  - !use {post_flag_count: {post: $post}}
+  - i32.const 10
+  - i32.ge_s
+```
 
 ### `!raw`
 
@@ -83,11 +170,186 @@ have structured support for:
 - !raw "i32.load offset=4"
 ```
 
+In practice, `!raw` is most useful inside macro files as part of field accessor
+macros — workflow authors use `!use` and never write `!raw` directly.
+
 ---
 
-## func declarations
+## macro files
 
-### params, results, locals
+A macro file's top-level keys are macro names — there is no wrapper key. Since
+a file named in an `include:` block can only contain macros, the `macros:`
+wrapper would be redundant. The compiler knows the context from how the file
+was loaded.
+
+A macro that accepts parameters declares them under a `params:` key alongside a
+`body:` key. Parameter names use the `$` sigil, matching wasm local naming
+convention — the compiler substitutes them during expansion before the result
+reaches the WAT emitter. The `params:` list makes explicit which `$` identifiers
+are substitution targets and which are literal wasm names passed through
+verbatim.
+
+A macro without `params:` has its entire value used as the expansion body, with
+no substitution performed.
+
+```yaml
+# host/post.yaml
+
+# Post struct layout written by the host into wasm linear memory.
+#
+#   offset  field          type
+#   ------  -----          ----
+#        0  score          i32
+#        4  flag_count     i32
+#        8  word_count     i32
+#       12  author_tier    i32    0=new, 1=established, 2=trusted
+#       16  is_repost      i32
+#       20  community_id   i32
+#       24  author_id      i32
+
+load_post:
+  params: [$post, $post_id]
+  body:
+    - i32.const 0
+    - local.set $post
+    - local.get $post_id
+    - local.get $post
+    - call $get_post
+
+post_score:
+  params: [$post]
+  body:
+    - local.get $post
+    - i32.load
+
+post_flag_count:
+  params: [$post]
+  body:
+    - local.get $post
+    - !raw "i32.load offset=4"
+
+post_word_count:
+  params: [$post]
+  body:
+    - local.get $post
+    - !raw "i32.load offset=8"
+
+post_author_tier:
+  params: [$post]
+  body:
+    - local.get $post
+    - !raw "i32.load offset=12"
+
+post_is_repost:
+  params: [$post]
+  body:
+    - local.get $post
+    - !raw "i32.load offset=16"
+
+moderate_func:
+  export: true
+  param: [$post_id i32]
+  result: i32
+  local: [$post i32]
+
+import_get_post:
+  from: [env, get_post]
+  param: [$post_id i32, $ptr i32]
+
+post_mem:
+  pages: 1
+  export: mem
+```
+
+```yaml
+# host/verdicts.yaml
+
+verdict_approve:  [i32.const 0]
+verdict_hold:     [i32.const 1]
+verdict_escalate: [i32.const 2]
+verdict_remove:   [i32.const 3]
+```
+
+The macro file is the host contract. It is the single source of truth for
+struct layout, field offsets, memory size, import signatures, and func
+signatures. Both the host implementation and the policy files work from the same
+file. If the host changes a field offset or memory page count, policies pick it
+up on recompile without changes on their side.
+
+The `include:` list at the top of a policy file is also its own documentation —
+it tells a reader exactly which host contracts this policy depends on.
+
+---
+
+## macro expansion
+
+### argument substitution
+
+When a parameterized macro is expanded, the compiler substitutes each argument
+value for its corresponding parameter name throughout the macro body before
+splicing. Arguments may be passed positionally (matched by order) or by name
+(matched by key) — both forms produce identical output.
+
+```yaml
+# macro definition
+post_flag_count:
+  params: [$post]
+  body:
+    - local.get $post
+    - !raw "i32.load offset=4"
+
+# positional call site
+- !use {post_flag_count: [$my_post]}
+
+# named call site — equivalent
+- !use {post_flag_count: {post: $my_post}}
+
+# both expand to
+- local.get $my_post
+- !raw "i32.load offset=4"
+```
+
+### nested macros
+
+A macro body may itself contain `!use` tags. The compiler expands recursively —
+after substituting arguments into a macro body, it walks the result and expands
+any `!use` tags found there, with the same argument substitution rules applying
+at each level. Arguments are resolved before recursing, so by the time the
+compiler sees a nested `!use`, all parameter names from the outer expansion are
+already substituted with their call-site values.
+
+```yaml
+load_field_offset4:
+  params: [$ptr]
+  body:
+    - local.get $ptr
+    - !raw "i32.load offset=4"
+
+post_flag_count:
+  params: [$post]
+  body:
+    - !use {load_field_offset4: {ptr: $post}}
+```
+
+### cycle detection
+
+Circular macro expansions are detected and reported as errors. The compiler
+maintains an expansion stack and raises an error if a macro appears in its own
+expansion chain, reporting the full cycle:
+
+```
+error: circular macro expansion: post_flag_count -> load_field_offset4 -> post_flag_count
+```
+
+---
+
+## module files
+
+A module file's top-level keys after `include:` and `module:` map directly to
+WAT declarations. Keys are prefixed with the declaration type and identifier:
+`func $id`, `import $id`, `memory $id`, and so on, exactly as in WAT.
+
+### func declarations
 
 ```yaml
 func $my_func:
@@ -97,24 +359,20 @@ func $my_func:
   body: [...]
 ```
 
-### export
-
-`export: True` infers the export name from the func id (stripping the leading
-`$`). An explicit string value uses that name instead:
+**export** — `export: true` infers the export name from the func id (stripping
+the leading `$`). An explicit string value uses that name instead:
 
 ```yaml
 func $add:
-  export: True        # exports as "add"
+  export: true          # exports as "add"
 
 func $internal_name:
-  export: public_name # exports as "public_name"
+  export: public_name   # exports as "public_name"
 ```
 
-### body
+**body** — a flat list of instructions. Structured constructs use dict syntax:
 
-The body is a flat list of instructions. Structured constructs use dict syntax:
-
-**block and loop** — `end` is synthesized automatically:
+`block` and `loop` — `end` is synthesized automatically:
 
 ```yaml
 - block $done:
@@ -123,7 +381,7 @@ The body is a flat list of instructions. Structured constructs use dict syntax:
         - br $top
 ```
 
-**if** — two forms depending on whether the branch is a guard or produces a value:
+`if` — two forms depending on whether the branch is a guard or produces a value:
 
 flat form — one-armed guard, no result value:
 
@@ -134,7 +392,8 @@ flat form — one-armed guard, no result value:
     - return
 ```
 
-structured form — two-armed branch or value-producing if (`result` required when producing a value):
+structured form — two-armed branch or value-producing if (`result` required
+when producing a value):
 
 ```yaml
 - if:
@@ -147,153 +406,73 @@ structured form — two-armed branch or value-producing if (`result` required wh
 
 ---
 
-## definitions blocks
+## a complete example
 
-A definitions block declares reusable YAML anchors. It does not emit any WAT
-directly. Four common uses:
-
-**import signatures** — shared param/result shapes for host functions:
-
-```yaml
-definitions:
-  imports:
-    get_user: &import_get_user
-      from: [env, get_user]
-      param: [$user_id i32, $ptr i32]
-```
-
-**func signatures** — reusable param/result pairs merged into func declarations:
+`standard_policy.yaml` under the new format. The macro file (`host/post.yaml`)
+gains explicit `params:` and `body:` structure; call sites gain explicit
+argument bindings. The policy body structure is otherwise unchanged.
 
 ```yaml
-definitions:
-  signatures:
-    i32_to_i32: &sig_i32_to_i32
-      param: [$x i32]
-      result: i32
-```
+# standard_policy.yaml
 
-**snippets** — inline instruction sequences referenced in func bodies:
+include:
+  - host/post.yaml
+  - host/verdicts.yaml
 
-```yaml
-definitions:
-  snippets:
-    guard_positive: &guard_positive
-      - i32.const 0
-      - i32.lt_s
-      - br_if $abort
-```
+module: $standard_policy
 
-**memory declarations** — the host contract specifies page count and export
-name; workflows merge it in rather than declaring memory independently:
-
-```yaml
-definitions:
-  memory:
-    post_mem: &post_mem
-      pages: 1
-      export: mem
-```
-
-```yaml
 memory $mem:
-  <<: *post_mem
+  !use post_mem
+
+import $get_post:
+  !use import_get_post
+
+func $moderate:
+  !use moderate_func
+  body:
+    - !use {load_post: {post: $post, post_id: $post_id}}
+
+    # remove if flag_count >= 10
+    - !use {post_flag_count: {post: $post}}
+    - i32.const 10
+    - i32.ge_s
+    - if:
+        - !use verdict_remove
+        - return
+
+    # escalate if is_repost AND flag_count > 0
+    - !use {post_is_repost: {post: $post}}
+    - !use {post_flag_count: {post: $post}}
+    - i32.const 0
+    - i32.gt_s
+    - i32.and
+    - if:
+        - !use verdict_escalate
+        - return
+
+    # hold if author_tier < 1
+    - !use {post_author_tier: {post: $post}}
+    - i32.const 1
+    - i32.lt_s
+    - if:
+        - !use verdict_hold
+        - return
+
+    # hold if score <= -10
+    - !use {post_score: {post: $post}}
+    - i32.const -10
+    - i32.le_s
+    - if:
+        - !use verdict_hold
+        - return
+
+    # default: approve
+    - !use verdict_approve
 ```
 
-This keeps memory configuration in the host contract alongside import signatures
-and struct field accessors. If the host changes the export name or page count,
-workflows pick it up on recompile without any changes on their side.
-
-Definitions can live in a separate file (included via `!include`) or as the
-first document in the same file. Separate files are preferred when the
-definitions are shared across multiple modules — see `host_types.yaml` below.
-
-### `::` short keys
-
-In definitions blocks the key name to the left of the anchor is often
-redundant — the anchor is the only thing that matters. The `::` short key
-convention drops the noise:
-
-```yaml
-definitions:
-  snippets:
-    :: &post_score
-      - i32.load
-    :: &post_flag_count
-      - !raw "i32.load offset=4"
-```
-
-Flow style works well for single-instruction snippets:
-
-```yaml
-definitions:
-  snippets:
-    :: &verdict_approve   [i32.const 0]
-    :: &verdict_hold      [i32.const 1]
-    :: &verdict_escalate  [i32.const 2]
-    :: &verdict_remove    [i32.const 3]
-```
-
-`::` is just a conventional key name with no special compiler support. It works
-because PyYAML silently accepts duplicate keys within a mapping (last value
-wins), which is technically out of spec but is consistent and intentional here
-since the key is never referenced. A future compiler pass will handle `::` at
-the text level for strict spec-compliance. In the meantime, avoid using `::` as
-a real key name elsewhere in your YAML.
-
----
-
-## shared definitions files
-
-When host and workflow need to agree on a contract — struct layout, import
-signatures, memory conventions — that agreement belongs in a shared definitions
-file included by both sides.
-
-`host_types.yaml` is the conventional name for a file that declares the struct
-layout and import signatures for a user object. At larger scales, a `host/`
-directory with one file per entity (e.g. `host/user.yaml`, `host/post.yaml`,
-`host/order.yaml`) is preferred over a single monolithic file. A workflow then
-includes only what it needs:
-
-```yaml
-!include host/user.yaml
-!include logic/guards.yaml
-```
-
-A complete host contract file declares four things together: the struct layout
-(as comments), field accessor snippets, import signatures, and the memory
-declaration. Workflows merge all of these in via anchors:
-
-```yaml
-definitions:
-  # User struct layout written by the host into wasm linear memory:
-  #   offset 0: age              (i32)
-  #   offset 4: residence        (i32)
-  #   offset 8: membership_tier  (i32)
-
-  snippets:
-    user_age: &user_age
-      - i32.load                   # field: age at offset 0
-    user_residence: &user_residence
-      - !raw "i32.load offset=4"   # field: residence
-
-  imports:
-    get_user: &import_get_user
-      from: [env, get_user]
-      param: [$user_id i32, $ptr i32]
-
-  memory:
-    user_mem: &user_mem
-      pages: 1
-      export: mem
-```
-
-The workflow includes this file and merges in what it needs — import signatures
-with `<<:`, field accessors with `*`, and memory with `<<:`. The host contract
-is the single source of truth for struct layout, field offsets, memory size, and
-capability surface. Both sides work from the same file.
-
-The include list at the top of a workflow is also its own form of documentation
-— it tells a reader exactly which host capabilities the policy depends on.
+The explicit argument bindings make the contract between the macro and its call
+site visible at a glance. A reader no longer needs to know that `$post` is an
+implicit convention — the call site says exactly which local is being passed.
 
 ---
 
@@ -307,37 +486,29 @@ structure.
 ### the verdict model
 
 Rather than calling host outcome functions directly, policies return an i32
-verdict. The host acts on the return value after `moderate` returns. A shared
-`host/verdicts.yaml` defines the enum:
+verdict. The host acts on the return value after `moderate` returns. Verdicts
+are defined in `host/verdicts.yaml` and ordered by severity:
 
-```yaml
-definitions:
-  snippets:
-    :: &verdict_approve   [i32.const 0]
-    :: &verdict_hold      [i32.const 1]
-    :: &verdict_escalate  [i32.const 2]
-    :: &verdict_remove    [i32.const 3]
 ```
-
-Ordered by severity — `approve < hold < escalate < remove` — so coordinators
-can compare verdicts arithmetically.
+approve(0) < hold(1) < escalate(2) < remove(3)
+```
 
 Every policy exports a `moderate` function with the same signature:
 
-```yaml
+```
 (post_id: i32) -> i32
 ```
 
-It does not matter whether the implementation is a flat rule chain or a
-coordinator calling three sub-policies. The host sees the same interface either
-way.
+### coordinator patterns
 
-### importing a sub-policy
-
-A coordinator imports sub-policies by naming the policy module and its exported
-function. The local name avoids collisions when importing multiple policies:
+**Veto chain** — first non-approve verdict wins:
 
 ```yaml
+include:
+  - host/verdicts.yaml
+
+module: $community_1_policy
+
 import $standard_moderate:
   from: [standard_policy, moderate]
   param: [$post_id i32]
@@ -347,21 +518,9 @@ import $no_curse_words_moderate:
   from: [no_curse_words_policy, moderate]
   param: [$post_id i32]
   result: i32
-```
 
-The host wires the right instance to each import slot at load time, the same way
-it wires `env` functions. Any import whose module is not `env` is a policy
-dependency — the host resolves them recursively by inspecting the wasm import
-section before instantiation.
-
-### coordinator patterns
-
-**Veto chain** — first non-approve verdict wins. Uses the `block`/`br_if`
-early-exit pattern with `local.tee` to store and test the verdict in one step:
-
-```yaml
 func $moderate:
-  export: True
+  export: true
   param: [$post_id i32]
   result: i32
   local: [$verdict i32]
@@ -377,18 +536,17 @@ func $moderate:
         - local.tee $verdict
         - br_if $done
 
-        - *verdict_approve
+        - !use verdict_approve
         - local.set $verdict
 
     - local.get $verdict
 ```
 
-**Strictest wins** — calls all sub-policies and takes the most severe verdict.
-Since verdicts are ordered by severity, this is a single `i32.gt_s`:
+**Strictest wins** — calls all sub-policies, takes the most severe verdict:
 
 ```yaml
 func $moderate:
-  export: True
+  export: true
   param: [$post_id i32]
   result: i32
   body:
@@ -402,19 +560,36 @@ func $moderate:
 ### self-describing dependencies
 
 The wasm import section lists every `(module, field)` pair a binary needs. A
-coordinator's dependencies are therefore declared in the binary itself — no
-separate manifest is required. The host can inspect imports before instantiation
-and build the full dependency graph automatically. The import list at the top of
-a coordinator yaml is also its own documentation: it tells a reader exactly
-which policies this coordinator depends on.
+coordinator's dependencies are declared in the binary itself — no separate
+manifest required. The host inspects imports before instantiation and builds
+the full dependency graph automatically.
 
-### the host stays thin
+---
 
-Leaf policies only need `get_post` from `env` — no outcome functions. The host
-provides data capabilities; policies provide logic. Outcome functions
-(`approve`, `hold`, `escalate`, `remove`) move from wasm imports to plain host
-code that acts on the verdict return value. Adding a new leaf policy requires no
-host changes.
+## compiler pipeline
+
+```
+for each module file:
+  1. parse the module file as a YAML document
+     - error if a top-level module: key is found in any included file
+  2. extract the include: list
+  3. for each path in include::
+       parse the macro file as a YAML document
+       register each top-level key/value pair as a named macro in the macro table
+  4. register any macros: declared in the module file into the macro table
+     - local declarations overwrite same-named entries from included files
+  5. walk the parsed module tree; resolve all !use tags:
+       no-arg form:   look up name, splice expansion
+       parameterized: look up name, substitute arguments, splice expansion
+       recurse into expansions until no !use tags remain
+       detect and report cycles via expansion stack
+  6. build the IR from the fully resolved tree
+  7. emit WAT (bucket pass preserves WAT section ordering)
+  8. write .wat and .d depfile
+```
+
+The `include:` list is the complete input for the `.d` depfile — available
+after step 1 with no tracking needed during expansion.
 
 ---
 
@@ -429,8 +604,8 @@ specific to yamwat's *structured emitters* — the dict-based syntax for `if`,
 ### `i32.load` with offset or alignment
 
 WAT's load and store instructions support `offset=N` and `align=N` modifiers.
-These cannot be expressed as structured YAML keys because yamwat would emit a
-trailing `None` for the value, producing invalid WAT. Use `!raw` instead:
+These cannot be expressed as plain YAML mapping keys without a trailing null
+value. Use `!raw` instead:
 
 ```yaml
 # wrong — emits "i32.load offset=4 None"
@@ -441,9 +616,9 @@ trailing `None` for the value, producing invalid WAT. Use `!raw` instead:
 ```
 
 The same applies to `i32.store`, `i64.load`, and all other load/store variants
-with modifiers. In practice this friction is best contained in host contract
-files (e.g. `host/post.yaml`) as field accessor snippets — workflow authors
-use the snippet name and never write `!raw` directly.
+with modifiers. In practice this is best contained in macro files as named
+field accessor macros — workflow authors use `!use` and never write `!raw`
+directly.
 
 ### `call_indirect`
 
@@ -491,9 +666,6 @@ A follow-up to `access_check`. The host provides a richer user record via
 linear memory rather than a single i32. The workflow reads fields and enforces a
 compound policy: age >= 21, not a CA resident, membership required.
 
-Introduces `host_types.yaml` — a shared definitions file declaring the struct
-layout and import signatures used by both host and workflow.
-
 ```
 uv run run.py --user_id=1
 ```
@@ -506,8 +678,7 @@ functions that call back into wasm when ready. The host owns async execution;
 the workflow owns sequencing.
 
 Demonstrates `table`, `elem`, `type` declarations, and the callback index
-pattern. The runner simulates async by calling back synchronously — the wasm
-instance is re-entered the same way either way.
+pattern.
 
 ```
 uv run run.py --report_id=1
@@ -516,13 +687,9 @@ uv run run.py --report_id=1
 ### content_moderation
 
 A community content moderation system demonstrating the verdict model and policy
-composition. Leaf policies (`standard_policy`, `strict_policy`) return i32
-verdicts instead of calling host outcome functions directly. Coordinator policies
-(`community_1_policy`, `community_34_policy`) import leaf policies as functions
-and compose their verdicts using the veto chain or strictest-wins pattern.
-
-The host loads policies by inspecting the wasm import section recursively —
-no manifest required. Adding a new community policy requires no host changes.
+composition. Leaf policies return i32 verdicts. Coordinator policies import leaf
+policies as functions and compose their verdicts using the veto chain or
+strictest-wins pattern.
 
 ```
 uv run host.py --post_id=1
@@ -539,8 +706,6 @@ Tests live in `test_yamwat.py` and run the full pipeline for each fixture:
 ```
 pytest test_yamwat.py -v
 ```
-
-CI runs the same Dockerfile used in development.
 
 Two fixture patterns are supported:
 
