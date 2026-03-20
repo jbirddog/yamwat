@@ -1,6 +1,7 @@
-definitions:
-  snippets:
-    :: &verdict_approve   [i32.const 0]
-    :: &verdict_hold      [i32.const 1]
-    :: &verdict_escalate  [i32.const 2]
-    :: &verdict_remove    [i32.const 3]
+# Verdict enum — ordered by severity: approve < hold < escalate < remove
+# Coordinators can compare verdicts arithmetically.
+
+verdict_approve:  [i32.const 0]
+verdict_hold:     [i32.const 1]
+verdict_escalate: [i32.const 2]
+verdict_remove:   [i32.const 3]

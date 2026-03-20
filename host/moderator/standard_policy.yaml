@@ -1,8 +1,8 @@
-!include host/post.yaml
-!include host/verdicts.yaml
+include:
+  - host/post.yaml
+  - host/verdicts.yaml
 
----
-# standard_policy.yaml — baseline content moderation policy
+# baseline content moderation policy
 # permissive defaults: only removes heavily flagged content,
 # holds new authors and deeply negative posts, approves everything else
 #
@@ -16,49 +16,49 @@
 module: $standard_policy
 
 memory $mem:
-  <<: *post_mem
+  !use post_mem
 
 import $get_post:
-  <<: *import_get_post
+  !use import_get_post
 
 func $moderate:
-  <<: *moderate_func
+  !use moderate_func:
   body:
-    - *load_post
+    - !use {load_post: [$post, $post_id]}
 
     # remove if flag_count >= 10
-    - *post_flag_count
+    - !use {post_flag_count: [$post]}
     - i32.const 10
     - i32.ge_s
     - if:
-        - *verdict_remove
+        - !use verdict_remove
         - return
 
     # escalate if is_repost AND flag_count > 0
-    - *post_is_repost
-    - *post_flag_count
+    - !use {post_is_repost: [$post]}
+    - !use {post_flag_count: [$post]}
     - i32.const 0
     - i32.gt_s
     - i32.and
     - if:
-        - *verdict_escalate
+        - !use verdict_escalate
         - return
 
     # hold if author_tier < 1 (new account)
-    - *post_author_tier
+    - !use {post_author_tier: [$post]}
     - i32.const 1
     - i32.lt_s
     - if:
-        - *verdict_hold
+        - !use verdict_hold
         - return
 
     # hold if score <= -10
-    - *post_score
+    - !use {post_score: [$post]}
     - i32.const -10
     - i32.le_s
     - if:
-        - *verdict_hold
+        - !use verdict_hold
         - return
 
     # default: approve
-    - *verdict_approve
+    - !use verdict_approve

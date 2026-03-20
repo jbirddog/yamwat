@@ -1,0 +1,6 @@
+sig_i32_to_i32:
+  param: [$x i32]
+  result: i32
+
+sig_void_to_i32:
+  result: i32

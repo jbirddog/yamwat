@@ -1,6 +1,4 @@
-# access_check_21.yaml — policy variant requiring age 21+
-# the host functions are identical to access_check.yaml
-# only the policy changes
+# policy variant requiring age 21+
 
 module: $access_check_21
 
@@ -18,7 +16,7 @@ import $deny:
   param: [$user_id i32]
 
 func $check_access:
-  export: True
+  export: true
   param: [$user_id i32]
   body:
     - local.get $user_id

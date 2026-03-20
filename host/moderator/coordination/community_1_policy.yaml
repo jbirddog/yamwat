@@ -1,7 +1,7 @@
-!include host/verdicts.yaml
+include:
+  - verdicts.yaml
 
----
-# community_1_policy.yaml — veto chain coordinator
+# veto chain coordinator
 # delegates to sub-policies in order; first non-approve verdict wins
 #
 # decision order:
@@ -22,12 +22,11 @@ import $no_curse_words_moderate:
   result: i32
 
 func $moderate:
-  export: True
+  export: true
   param: [$post_id i32]
   result: i32
   local: [$verdict i32]
   body:
-    # veto chain — first non-approve verdict wins
     - block $done:
         - local.get $post_id
         - call $standard_moderate
@@ -39,7 +38,7 @@ func $moderate:
         - local.tee $verdict
         - br_if $done
 
-        - *verdict_approve
+        - !use verdict_approve
         - local.set $verdict
 
     - local.get $verdict

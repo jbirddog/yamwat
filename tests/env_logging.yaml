@@ -1,0 +1,3 @@
+import_log:
+  from: [env, log]
+  param: [$x i32]
