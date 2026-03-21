@@ -31,6 +31,39 @@ the host in a way that trades one form of hardcoding for another.
 This is an honest constraint rather than a design failure. The transpiler remains as close to a naked
 dispatcher as the wasm sandbox model allows.
 
+### The Two Stacks
+
+`wasm4th` has two distinct stacks that should not be confused:
+
+**Compile-time stack** — exists only in the transpiler. Tracks types and constant values, drives stack
+effect inference, supplies immediates, and is manipulated by `!` kernel words. It has no runtime
+existence.
+
+**WAT runtime stack** — WAT's ephemeral evaluation stack, used for intermediate computation within a
+word body. It is not a persistent Forth data stack. Values do not flow between words via the stack —
+they flow via WAT function call conventions, where parameters are captured as locals `$0`, `$1`, etc.
+
+### Clean Stack Per Invocation
+
+Each word invocation begins with a clean runtime stack. Parameters arrive as locals, not as values
+already on the stack. The idiomatic `wasm4th` pattern is to explicitly `local.get` whatever params are
+needed onto the stack as computation requires them:
+
+```wasm4th
+:total_plus_one
+  #0 local.get
+  #1 local.get
+  ,sum
+  #1 i32.const
+  i32.add ;
+```
+
+This is a deliberate departure from traditional Forth where values persist on the stack across word
+boundaries. In `wasm4th` the stack is a scratch space for evaluation within a word — each word is
+self-contained. Consecutive operations within a word body still compose naturally on the runtime stack
+as expected, but params must be explicitly loaded. This maps honestly onto WAT's execution model rather
+than pretending WAT has a persistent Forth stack underneath.
+
 ---
 
 ## Token Prefixes
@@ -556,15 +589,17 @@ Demonstrates recursion and the compile-time `!drop` needed in the base case due 
 
 ### Array sum (locals and `block`/`loop`)
 
-Demonstrates local variable declaration, `block`/`loop`/`end`, and depth-relative `br_if`.
+Demonstrates local variable declaration, `block`/`loop`/`end`, and depth-relative `br_if` without
+`if/then`. Also illustrates the clean-stack-per-invocation model — params arrive as locals `$0` and
+`$1`, explicitly loaded onto the runtime stack as needed.
 
 ```wasm4th
 :sum
   $acc ^i32 local
-  $acc #0 i32.const local.set
+  $acc #0 \i32.const local.set
   block
     loop
-      #1 local.get i32.eqz if #1 br_if then
+      #1 local.get i32.eqz #1 br_if
       $acc local.get #0 local.get i32.load i32.add $acc local.set
       #0 local.get #4 i32.const i32.add #0 local.set
       #1 local.get #1 i32.const i32.sub #1 local.set
@@ -600,6 +635,32 @@ Demonstrates local variable declaration, `block`/`loop`/`end`, and depth-relativ
     )
   )
   (local.get $acc)
+)
+```
+
+---
+
+### Calling `sum` (`total_plus_one`)
+
+Demonstrates the clean-stack model at a call site — params are explicitly loaded from locals before
+the call, and the result is used directly from the runtime stack on return.
+
+```wasm4th
+:total_plus_one
+  #0 local.get
+  #1 local.get
+  ,sum
+  #1 i32.const
+  i32.add ;
+```
+
+```wat
+(func $total_plus_one (param i32) (param i32) (result i32)
+  (local.get 0)
+  (local.get 1)
+  (call $sum)
+  (i32.const 1)
+  (i32.add)
 )
 ```
 
