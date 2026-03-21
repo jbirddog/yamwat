@@ -42,7 +42,7 @@ dispatcher as the wasm sandbox model allows.
 | `^`    | `^i32`       | Push a type onto the compile-time stack; used in type definitions and `call_indirect` |
 | `:^`   | `:^read_type` | Define a named type signature                           |
 | `#`    | `#42`        | Push a constant onto the compile-time stack; consumed as an immediate argument by WAT instructions that require one |
-| `$`    | `$2`         | Compile a literal integer into the function body         |
+| `$`    | `$acc`       | Push a WAT identifier onto the compile-time stack; consumed as a name by instructions like `local`, `local.get`, `local.set` |
 | `,`    | `,add`       | Compile a call to a named word into the function body    |
 | `!`    | `!swap`      | Execute a kernel word at compile time; manipulates the compile-time stack, emits nothing |
 | `&`    | `&add`       | Push a func reference onto the compile-time stack; for unknown names, creates an unresolved reference resolved by `import` |
@@ -90,6 +90,7 @@ the immediate rather than treating it as a runtime value. The `#` prefix is the 
 The compile-time stack can hold the following slot types:
 
 - **Numeric types** — `i32`, `i64`, `f32`, `f64`, optionally with a known constant value
+- **Identifier values** — pushed by `$`, consumed as WAT identifier names by `local`, `local.get`, `local.set` etc.
 - **Type references** — pushed by `^`, used by `:^` definitions and `call_indirect`
 - **Func references** — pushed by `&`, used by `export`, `import`, `elem`
 - **String values** — pushed by `"`, only valid in module-level declarations
@@ -203,6 +204,8 @@ Consumes a type reference from the compile-time stack and a runtime index:
 
 
 
+## Word Definitions
+
 A word definition begins with a `:` prefixed token and ends with `;`.
 
 ```
@@ -241,7 +244,45 @@ All branches of a conditional must yield the same stack effect. Unbalanced branc
 WAT's `if` *does* consume its condition, so the transpiler is responsible for emitting the appropriate
 `local.get` to restore the peeked value inside the branch and in the fall-through path.
 
-### Tail Calls and Loops
+### `block` / `loop` / `end`
+
+`block` and `loop` open a new scope. `end` closes the innermost open scope. The transpiler maintains a nesting stack — each `block` or `loop` pushes a scope entry, `end` pops it. `br` and `br_if` target scopes by depth index where `#0` is always the innermost:
+
+```
+block         ( depth 1 from inside loop )
+  loop        ( depth 0 from inside loop )
+    ...
+    #1 br_if  ( break out of block )
+    #0 br     ( continue loop )
+  end
+end
+```
+
+`block` and `loop` type signatures are inferred from the compile-time stack at `end`, consistent with how func results are inferred at `;`.
+
+### `br_table`
+
+Consumes a list slot of depth indices from the compile-time stack. The last index in the list is the default. Constructed naturally using `[ ]`:
+
+```
+[ #0 #1 #2 ] br_table   ( #2 is default )
+```
+
+### Local Variables
+
+Scratch locals are declared with `$name ^type local` at the top of a word body, before any `block` or `loop`. WAT requires locals declared in the func header — declaring them mid-body will produce invalid WAT caught by `wat2wasm`. The transpiler emits local declarations in the order it encounters them, single pass.
+
+`$` pushes a WAT identifier onto the compile-time stack. `local` consumes the identifier and type, emits the local declaration, and registers the name for subsequent `local.get` and `local.set`:
+
+```wasm4th
+$acc ^i32 local            ( declares (local $acc i32) )
+$acc #0 i32.const local.set ( initialise to 0 )
+$acc local.get             ( push acc onto runtime stack )
+```
+
+`local.get` and `local.set` each consume an identifier from the compile-time stack as their immediate.
+
+
 
 Recursion is used to express loops. Because words see themselves during their own definition, a word can
 call itself at the tail position:
@@ -367,9 +408,14 @@ caught by `wat2wasm`.
 - Each word definition becomes a WAT `func`.
 - Function parameters are derived from the param list accumulated during stack effect inference.
 - Parameter names (`$0`, `$1`, ...) are assigned by the transpiler in order.
-- Literals (`$n`) emit `i32.const n` (or the appropriate type).
+- Locals (`$name ^type local`) are emitted in declaration order in the func header before the body.
+- Literals (`#n i32.const`) emit `(i32.const n)` (or the appropriate type).
 - Calls (`,word`) emit `(call $word)`.
 - `;` at depth > 0 emits `(return)`. `;` at depth 0 closes the definition; `(return)` is implicit in WAT at end of func.
+- `block` and `loop` emit their respective WAT constructs and push a scope onto the nesting stack.
+- `end` emits `)` closing the innermost scope and pops the nesting stack.
+- `#n br` and `#n br_if` consume the depth index from the compile-time stack and emit the WAT branch instruction.
+- `[ ... ] br_table` unpacks the list slot and emits `(br_table ...)` with all indices.
 - WAT's `if` consumes its condition; the transpiler emits `local.get` as needed to restore the peeked value in both the taken branch and the fall-through path.
 - No inlining. No optimization. One `call` per `,word`.
 
@@ -396,7 +442,7 @@ caught by `wat2wasm`.
 ### Double
 
 ```wasm4th
-:double $2 i32.mul ;
+:double #2 i32.const i32.mul ;
 ```
 
 ```wat
@@ -412,8 +458,8 @@ caught by `wat2wasm`.
 ### Conditional with early return
 
 ```wasm4th
-:countdown ,drop ;
-:loop $0 i32.gt_s if ,countdown ; then ,loop ;
+:countdown drop ;
+:loop #0 i32.const i32.gt_s if ,countdown ; then ,loop ;
 ```
 
 ```wat
@@ -441,7 +487,7 @@ Demonstrates non-consuming `if` — the original value remains on the stack in b
 explicit `local.get` in `wasm4th` source. The transpiler emits the necessary `local.get` in WAT.
 
 ```wasm4th
-:abs $0 i32.lt_s if i32.neg ; then ;
+:abs #0 i32.const i32.lt_s if i32.neg ; then ;
 ```
 
 ```wat
@@ -480,7 +526,7 @@ without emitting any WAT. `clamp` composes `max` and `min` naturally and reads a
 Demonstrates recursion and the compile-time `!drop` needed in the base case due to non-consuming `if`.
 
 ```wasm4th
-:factorial $1 i32.le_s if !drop $1 ; then $1 i32.sub ,factorial i32.mul ;
+:factorial #1 i32.const i32.le_s if !drop #1 i32.const ; then #1 i32.const i32.sub ,factorial i32.mul ;
 ```
 
 ```wat
@@ -506,13 +552,59 @@ Demonstrates recursion and the compile-time `!drop` needed in the base case due 
 
 ---
 
+### Array sum (locals and `block`/`loop`)
+
+Demonstrates local variable declaration, `block`/`loop`/`end`, and depth-relative `br_if`.
+
+```wasm4th
+:sum
+  $acc ^i32 local
+  $acc #0 i32.const local.set
+  block
+    loop
+      #1 local.get i32.eqz if #1 br_if then
+      $acc local.get #0 local.get i32.load i32.add $acc local.set
+      #0 local.get #4 i32.const i32.add #0 local.set
+      #1 local.get #1 i32.const i32.sub #1 local.set
+      #0 br
+    end
+  end
+  $acc local.get ;
+```
+
+```wat
+(func $sum (param i32) (param i32) (result i32)
+  (local $acc i32)
+  (local.set $acc (i32.const 0))
+  (block
+    (loop
+      (local.get 1)
+      (i32.eqz)
+      (br_if 1)
+      (local.get $acc)
+      (local.get 0)
+      (i32.load)
+      (i32.add)
+      (local.set $acc)
+      (local.get 0)
+      (i32.const 4)
+      (i32.add)
+      (local.set 0)
+      (local.get 1)
+      (i32.const 1)
+      (i32.sub)
+      (local.set 1)
+      (br 0)
+    )
+  )
+  (local.get $acc)
+)
+```
+
+---
+
 ## Open Todos
 
-These constructs are designed but not yet fully worked through with examples:
-
-- **`block` / `loop` / `end`** — nesting and label depth tracking; `end` closes the scope, `#n br` and `#n br_if` are depth-relative
-- **`local.set` / `local.tee` / local declaration** — scratch locals inside word bodies; tied to block/loop scoping design
-- **`br_table`** — consumes a list slot of depth indices plus a default; e.g. `[ #0 #1 #2 ] br_table`
 - **`global`** — module-level global declaration with name, mutability, type, and initial value
 - **Macros** — will be added as a prefix; fall in naturally once the core is solid
 
