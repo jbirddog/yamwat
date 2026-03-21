@@ -22,11 +22,19 @@ self-describing via a prefix character, inspired by ColorForth.
 | Prefix | Example      | Meaning                                                  |
 |--------|--------------|----------------------------------------------------------|
 | `:`    | `:add`       | Begin a word definition; create a dictionary entry       |
+| `::`   | `::add`      | Begin a word definition and export it under its own name |
+| `^`    | `^i32`       | Push a type onto the compile-time stack; used in type definitions and `call_indirect` |
+| `:^`   | `:^read_type` | Define a named type signature                           |
 | `#`    | `#42`        | Push a constant onto the compile-time stack; consumed as an immediate argument by WAT instructions that require one |
 | `$`    | `$2`         | Compile a literal integer into the function body         |
 | `,`    | `,add`       | Compile a call to a named word into the function body    |
 | `!`    | `!swap`      | Execute a kernel word at compile time; manipulates the compile-time stack, emits nothing |
-| *(none)* | `i32.add` | A core WAT word; looked up and emitted directly          |
+| `&`    | `&add`       | Push a func reference onto the compile-time stack; for unknown names, creates an unresolved reference resolved by `import` |
+| `"`    | `"env"`      | Push a string onto the compile-time stack; only valid in module-level context |
+| `[`    | `[`          | Push a new compile-time stack frame (begin a compile-time list) |
+| `]`    | `]`          | Pop the top compile-time stack frame and push it as a single list slot onto the frame below |
+| `--`   | `--`         | Separator in `:^` type definitions; divides input types from output types |
+| *(none)* | `i32.add` | A core WAT instruction; looked up and emitted directly   |
 
 Tokens with no prefix are core WAT words. If a token does not match a known WAT word or dictionary entry,
 it is an error.
@@ -61,9 +69,123 @@ the immediate rather than treating it as a runtime value. The `#` prefix is the 
 #0 local.get   ( pops #0 from compile-time stack, emits (local.get 0) )
 ```
 
+### Compile-Time Stack Slot Types
+
+The compile-time stack can hold the following slot types:
+
+- **Numeric types** — `i32`, `i64`, `f32`, `f64`, optionally with a known constant value
+- **Type references** — pushed by `^`, used by `:^` definitions and `call_indirect`
+- **Func references** — pushed by `&`, used by `export`, `import`, `elem`
+- **String values** — pushed by `"`, only valid in module-level declarations
+- **List slots** — pushed by `]`, contains a nested compile-time stack frame
+
+### Stack of Stacks
+
+The compile-time stack is a **stack of stacks**. At any point there is a current top frame; all compile-time operations act against it. `[` and `]` manage frames:
+
+- `[` — push a new empty frame onto the stack of stacks; subsequent tokens operate against this frame
+- `]` — pop the top frame and push it as a single list slot onto the frame below
+
+This allows variable-length compile-time sequences to be constructed naturally:
+
+```wasm4th
+[ &abs &double &factorial ]   ( list of three func references )
+[ #0 #1 #2 ]                  ( list of three label indices )
+[ #1 #2 !min ]                ( compile-time computed list entry )
+```
+
+Words that consume list slots — `elem`, `br_table` — unpack the frame during emission. Everything inside `[ ]` uses existing prefix rules against the top frame with no special cases.
+
 ---
 
-## Word Definitions
+## Type Definitions
+
+The `:^` prefix defines a named WAT type signature. The body uses `^` to push types onto the compile-time stack, with `--` separating inputs from outputs:
+
+```wasm4th
+:^unary_type ^i32 -- ^i32 ;
+:^binary_type ^i32 ^i32 -- ^i32 ;
+:^log_type ^i32 -- ;
+:^thunk_type -- ^i32 ;
+```
+
+Emitting:
+```wat
+(type $unary_type (func (param i32) (result i32)))
+(type $binary_type (func (param i32) (param i32) (result i32)))
+(type $log_type (func (param i32)))
+(type $thunk_type (func (result i32)))
+```
+
+Type definitions are module-level declarations. They do not define callable words — they define signatures that can be referenced by `&`, `import`, and `call_indirect`.
+
+---
+
+## Module-Level Declarations
+
+All module-level declarations use the same single-mode token stream as word definitions. The `(module ...)` wrapper is implicit — the transpiler always emits one.
+
+### `export`
+
+```wasm4th
+"increment" &increment export
+```
+
+The `::` shorthand defines and exports a word under its own name in one token:
+
+```wasm4th
+::increment ... ;
+( equivalent to: :increment ... ; "increment" &increment export )
+```
+
+### `import`
+
+Imports require a type definition and an unresolved name reference. The unresolved `&name` is registered in the dictionary by `import` using the referenced type's signature:
+
+```wasm4th
+:^read_type ^i32 -- ^i32 ;
+"env" "read" &read_type &read import
+```
+
+Emitting:
+```wat
+(type $read_type (func (param i32) (result i32)))
+(import "env" "read" (func $read (type $read_type)))
+```
+
+After this, `,read` is valid and the transpiler knows its stack effect from the type definition.
+
+### `memory`
+
+`memory` always takes two immediates — minimum and maximum page counts:
+
+```wasm4th
+#1 #1 memory        ( (memory 1 1) )
+#1 !dup memory      ( same, using compile-time dup )
+```
+
+### `table` and `elem`
+
+```wasm4th
+#3 funcref table
+[ &abs &double &factorial ] $0 elem
+```
+
+`elem` consumes a list slot of func references and a runtime offset, emitting the element segment.
+
+### `call_indirect`
+
+Consumes a type reference from the compile-time stack and a runtime index:
+
+```wasm4th
+:^unary_type ^i32 -- ^i32 ;
+...
+^unary_type call_indirect
+```
+
+---
+
+
 
 A word definition begins with a `:` prefixed token and ends with `;`.
 
@@ -125,10 +247,6 @@ The dictionary at compile time is seeded from two layers before any user source 
 Always available, no prefix required. These are the bedrock — every WAT instruction is a valid token,
 including `local.get`, `local.set`, `local.tee`, `drop`, `br`, `br_if`, and all typed arithmetic and
 comparison instructions. This layer ensures any WAT construct can be expressed in `wasm4th`.
-
-### Layer 2 — Kernel
-
-A small set of stack-shuffling and utility words built on top of layer 1. The kernel has two modes:
 
 ### Layer 2 — Kernel
 
@@ -372,17 +490,20 @@ Demonstrates recursion and the compile-time `!drop` needed in the base case due 
 
 ---
 
-## Out of Scope (for now)
+## Open Todos
 
+These constructs are designed but not yet fully worked through with examples:
+
+- **`block` / `loop` / `end`** — nesting and label depth tracking; `end` closes the scope, `#n br` and `#n br_if` are depth-relative
+- **`local.set` / `local.tee` / local declaration** — scratch locals inside word bodies; tied to block/loop scoping design
+- **`br_table`** — consumes a list slot of depth indices plus a default; e.g. `[ #0 #1 #2 ] br_table`
+- **`global`** — module-level global declaration with name, mutability, type, and initial value
 - **Macros** — will be added as a prefix; fall in naturally once the core is solid
+
+## Out of Scope
+
 - **Optimization** — entirely delegated to `wasm-opt`
 - **Type checking** — entirely delegated to `wat2wasm`
-- **`create` / `does>` / `postpone` / `immediate`** — not planned; the single-mode parser eliminates the
-  need for most of these
+- **`create` / `does>` / `postpone` / `immediate`** — not planned; the single-mode parser eliminates the need for most of these
 - **`else`** — not needed; early return via `;` suffices
-- **`local.set`, `local.tee`, local declaration** — needed for scratch locals inside word bodies;
-  deferred until `block` and `loop` constructs are designed, as the same scoping questions apply to both
-- **`block`, `loop`, `br`, `br_if`** — WAT structured control flow beyond `if/then`; the immediate
-  syntax via `#` is already in place for `br_if.0` style usage, but scoping and label tracking need
-  design work
 
