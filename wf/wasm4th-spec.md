@@ -15,6 +15,22 @@ existing tools already do well.
 There is no interpret/compile duality. The parser operates in a single mode at all times. Every token is
 self-describing via a prefix character, inspired by ColorForth.
 
+### Architectural Note
+
+The deeper vision for `wasm4th` is a pure prefix-dispatch engine with no domain knowledge — load a
+different kernel, get a different target language. The stack-of-stacks machinery, prefix dispatch, and
+compile-time execution are all genuinely target-agnostic.
+
+In practice there are two things that remain WAT-specific in the transpiler: the WAT instruction table
+(names, stack effects, immediates count) and the WAT emission format. The instruction table is largely
+dissolved into the kernel via export inspection — known words with known signatures. The emission format
+is the irreducible minimum: the transpiler must own the output stream, because a wasm sandbox cannot write
+to an external output without host-imported IO, and introducing that protocol would couple the kernel to
+the host in a way that trades one form of hardcoding for another.
+
+This is an honest constraint rather than a design failure. The transpiler remains as close to a naked
+dispatcher as the wasm sandbox model allows.
+
 ---
 
 ## Token Prefixes
