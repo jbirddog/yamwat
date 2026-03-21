@@ -650,15 +650,11 @@ encoding.
 
 ---
 
-## Open Todos
-
-- **Macros** — will be added as a prefix; fall in naturally once the core is solid
-
-
 ## Out of Scope
 
 - **Optimization** — entirely delegated to `wasm-opt`
 - **Type checking** — entirely delegated to `wat2wasm`
 - **`create` / `does>` / `postpone` / `immediate`** — not planned; the single-mode parser eliminates the need for most of these
 - **`else`** — not needed; early return via `;` suffices
+- **Macros** — no concrete use case identified; `!` kernel execution and stack-of-stacks cover compile-time computation needs. Can be revisited if a specific need surfaces during implementation.
 
