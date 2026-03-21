@@ -49,6 +49,7 @@ dispatcher as the wasm sandbox model allows.
 | `"`    | `"env"`      | Push a string onto the compile-time stack; only valid in module-level context |
 | `[`    | `[`          | Push a new compile-time stack frame (begin a compile-time list) |
 | `]`    | `]`          | Pop the top compile-time stack frame and push it as a single list slot onto the frame below |
+| `\`    | `\i32.const` | Defer a WAT expression; pushes a pending expression slot onto the compile-time stack rather than emitting immediately |
 | `--`   | `--`         | Separator in `:^` type definitions; divides input types from output types |
 | *(none)* | `i32.add` | A core WAT instruction; looked up and emitted directly   |
 
@@ -91,6 +92,7 @@ The compile-time stack can hold the following slot types:
 
 - **Numeric types** — `i32`, `i64`, `f32`, `f64`, optionally with a known constant value
 - **Identifier values** — pushed by `$`, consumed as WAT identifier names by `local`, `local.get`, `local.set` etc.
+- **Deferred expressions** — pushed by `\`, consumed by structural declarations like `global` and `data` that need an expression in a non-immediate position
 - **Type references** — pushed by `^`, used by `:^` definitions and `call_indirect`
 - **Func references** — pushed by `&`, used by `export`, `import`, `elem`
 - **String values** — pushed by `"`, only valid in module-level declarations
@@ -601,12 +603,57 @@ Demonstrates local variable declaration, `block`/`loop`/`end`, and depth-relativ
 )
 ```
 
+### `global`
+
+Globals need a name, type, optional mutability, and an initial value expression. The initial value cannot
+be emitted inline — it must appear inside the `global` declaration in WAT. `\` defers the expression onto
+the compile-time stack for `global` to consume:
+
+```wasm4th
+$counter ^i32 \mut #0 \i32.const global
+$max_size ^i32 #100 \i32.const global
+```
+
+Emitting:
+```wat
+(global $counter (mut i32) (i32.const 0))
+(global $max_size i32 (i32.const 100))
+```
+
+`global.get` and `global.set` consume a `$name` identifier from the compile-time stack:
+
+```wasm4th
+$counter global.get
+$counter #1 i32.const i32.add $counter global.set
+```
+
+### `data`
+
+Data segments take an offset expression and a string payload. The offset uses `\` for the same reason as
+`global` — it must appear inside the `data` declaration rather than being emitted immediately. The payload
+is a `"` string passed through verbatim to WAT, including escape sequences like `\00\ff`:
+
+```wasm4th
+#0 \i32.const "hello" data
+#16 \i32.const "\00\01\02\03" data
+```
+
+Emitting:
+```wat
+(data (i32.const 0) "hello")
+(data (i32.const 16) "\00\01\02\03")
+```
+
+WAT accepts only string literals as data payloads — there is no separate binary literal syntax. All byte
+sequences including raw binary are expressed as strings with escape sequences, and `wat2wasm` handles the
+encoding.
+
 ---
 
 ## Open Todos
 
-- **`global`** — module-level global declaration with name, mutability, type, and initial value
 - **Macros** — will be added as a prefix; fall in naturally once the core is solid
+
 
 ## Out of Scope
 
